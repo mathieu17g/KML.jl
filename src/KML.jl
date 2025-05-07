@@ -79,9 +79,19 @@ end
 XML.children(o::KMLElement) = XML.children(Node(o))
 
 typemap(o) = typemap(typeof(o))
+#! WIP
+# 1. cache: key = the struct type (e.g. Placemark), value = Dict of field ⇒ Type
+const _FIELD_MAP_CACHE = IdDict{DataType,Dict{Symbol,Type}}()
+# 2. fast typemap using the cache
 function typemap(::Type{T}) where {T<:KMLElement}
-    Dict(name => Base.nonnothingtype(S) for (name, S) in zip(fieldnames(T), fieldtypes(T)))
+    get!(_FIELD_MAP_CACHE, T) do
+        Dict{Symbol,Type}(name => Base.nonnothingtype(S) for (name, S) in zip(fieldnames(T), fieldtypes(T)))
+    end
 end
+#! END WIP
+#// function typemap(::Type{T}) where {T<:KMLElement}
+#//     Dict(name => Base.nonnothingtype(S) for (name, S) in zip(fieldnames(T), fieldtypes(T)))
+#// end
 
 Base.:(==)(a::T, b::T) where {T<:KMLElement} = all(getfield(a,f) == getfield(b,f) for f in fieldnames(T))
 
@@ -99,13 +109,13 @@ Base.string(o::AbstractKMLEnum) = o.value
 
 macro kml_enum(T, vals...)
     esc(quote
-        struct $T <: AbstractKMLEnum
-            value::String
-            function $T(value)
+            struct $T <: AbstractKMLEnum
+                value::String
+                function $T(value)
                 string(value) ∈ $(string.(vals)) || error($(string(T)) * " ∉ " * join($vals, ", ") * ". Found: " * string(value))
-                new(string(value))
+                    new(string(value))
+                end
             end
-        end
     end)
 end
 @kml_enum altitudeMode clampToGround relativeToGround absolute
