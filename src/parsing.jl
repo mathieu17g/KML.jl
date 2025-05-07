@@ -33,7 +33,34 @@ function Node(o::T) where {names, T <: KMLElement{names}}
 end
 
 #-----------------------------------------------------------------------------# object (or enum)
-function object(node::Node)
+# Fast object()  – deal with the handful of tags we care about
+function object(node::XML.Node)
+    sym = tagsym(node)
+
+    # 1.   tags that map straight to KML types  --------------------
+    if haskey(TAG_TO_TYPE, sym)
+        T = TAG_TO_TYPE[sym]
+        o = T()                               # no reflection
+        add_attributes!(o, node)
+        for child in XML.children(node)
+            add_element!(o, child)
+        end
+        return o
+    end
+    # 2.   enums ---------------------------------------------------
+    if sym in names(Enums, all = true)
+        return getproperty(Enums, sym)(XML.value(only(node)))
+    end
+    # 3.   <name>, <description>, … fast scalar leafs -------------
+    if XML.is_simple(node)
+        return String(XML.value(only(node)))   # plain text
+    end
+    # 4.   fallback to the old generic code ------------------------
+    return _object_slow(node)                 
+end
+
+# original implementation, renamed
+_object_slow(node::XML.Node) = begin
     sym = tagsym(node)
     if sym in names(Enums, all=true)
         return getproperty(Enums, sym)(XML.value(only(node)))

@@ -5,6 +5,12 @@ using GeoInterface: GeoInterface
 import XML: XML, Node
 using InteractiveUtils: subtypes
 
+#-----------------------------------------------------------------------------# Memoization constants
+# object types are stored as symbols in the TAG_TO_TYPE dictionary
+const TAG_TO_TYPE = Dict{Symbol,DataType}()
+# typemap cache: key = the struct type (e.g. Placemark), value = Dict of field ⇒ Type
+const _FIELD_MAP_CACHE = IdDict{DataType,Dict{Symbol,Type}}()
+
 #----------------------------------------------------------------------------# utils
 const INDENT = "  "
 
@@ -79,19 +85,12 @@ end
 XML.children(o::KMLElement) = XML.children(Node(o))
 
 typemap(o) = typemap(typeof(o))
-#! WIP
-# 1. cache: key = the struct type (e.g. Placemark), value = Dict of field ⇒ Type
-const _FIELD_MAP_CACHE = IdDict{DataType,Dict{Symbol,Type}}()
-# 2. fast typemap using the cache
+# fast typemap using the cache
 function typemap(::Type{T}) where {T<:KMLElement}
     get!(_FIELD_MAP_CACHE, T) do
         Dict{Symbol,Type}(name => Base.nonnothingtype(S) for (name, S) in zip(fieldnames(T), fieldtypes(T)))
     end
 end
-#! END WIP
-#// function typemap(::Type{T}) where {T<:KMLElement}
-#//     Dict(name => Base.nonnothingtype(S) for (name, S) in zip(fieldnames(T), fieldtypes(T)))
-#// end
 
 Base.:(==)(a::T, b::T) where {T<:KMLElement} = all(getfield(a,f) == getfield(b,f) for f in fieldnames(T))
 
@@ -735,5 +734,28 @@ for T in vcat(all_concrete_subtypes(KMLElement), all_abstract_subtypes(Object))
         @eval export $e
     end
 end
+
+#! WIP
+# ------------------------------------------------------------------
+#  Build TAG_TO_TYPE with *recursive* subtype walk
+# ------------------------------------------------------------------
+
+"Recursively collect every concrete descendant of `root`."
+function _collect_concrete!(root)     # accept *any* type value
+    for S in subtypes(root)
+        if isabstracttype(S)
+            _collect_concrete!(S)     # recurse first
+        else
+            sym = Symbol(replace(string(S), "KML." => ""))   # :Document, …
+            TAG_TO_TYPE[sym] = S
+        end
+    end
+    return
+end
+
+function __init__()
+    _collect_concrete!(KMLElement)    # helper is already defined
+end
+#! END WIP
 
 end #module
