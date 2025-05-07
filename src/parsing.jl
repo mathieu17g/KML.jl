@@ -52,6 +52,40 @@ end
 
 function add_element!(o::Union{Object,KMLElement}, child::Node)
     sym = tagsym(child)
+
+    # ──────────────────────────────────────────────────────────────────────────────────────
+    #  1. fast‑path for simple leaf tags (<name>, <description>, <coordinates>, etc.)
+    # ──────────────────────────────────────────────────────────────────────────────────────
+    if XML.is_simple(child)
+        fname = Symbol(replace(child.tag, ":" => "_"))
+        hasfield(typeof(o), fname) || return            # parent has no such field
+        txt = XML.value(XML.only(child))                # the text content
+        ftype = typemap(typeof(o))[fname]               # cached dict, O(1)
+
+        if ftype === String
+            val = txt
+        elseif ftype <: Integer
+            val = parse(Int, txt)                       # id, visibility, etc.
+        elseif ftype <: AbstractFloat
+            val = parse(Float64, txt)                   # longitude, latitude, etc.
+        elseif ftype <: Bool
+            val = (txt == "1" || lowercase(txt) == "true")
+        elseif ftype <: Enum
+            val = ftype(txt)                            # altitudeMode, etc.
+        else                                            # fallback (rare)
+            # complex or container type (Vector, Union of Vectors, etc.)
+            # → let the original logic handle it (includes coordinates parsing)
+            autosetfield!(o, fname, txt)
+            return
+        end
+
+        setfield!(o, fname, val)
+        return
+    end
+
+    # ──────────────────────────────────────────────────────────────────────────────────────
+    # 2. complex child → recurse
+    # ──────────────────────────────────────────────────────────────────────────────────────
     o_child = object(child)
 
     if !isnothing(o_child)
