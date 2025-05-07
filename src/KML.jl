@@ -722,24 +722,7 @@ Base.@kwdef mutable struct LookAt <: AbstractView
     @altitude_mode_elements
 end
 
-#-----------------------------------------------------------------------------# parsing
-include("parsing.jl")
-
-#-----------------------------------------------------------------------------# exports
-export KMLFile, Enums, object
-
-for T in vcat(all_concrete_subtypes(KMLElement), all_abstract_subtypes(Object))
-    if T != KML.Pair
-        e = Symbol(replace(string(T), "KML." => ""))
-        @eval export $e
-    end
-end
-
-#! WIP
-# ------------------------------------------------------------------
-#  Build TAG_TO_TYPE with *recursive* subtype walk
-# ------------------------------------------------------------------
-
+#-----------------------------------------------------------------------------# build TAG_TO_TYPE
 "Recursively collect every concrete descendant of `root`."
 function _collect_concrete!(root)     # accept *any* type value
     for S in subtypes(root)
@@ -752,10 +735,19 @@ function _collect_concrete!(root)     # accept *any* type value
     end
     return
 end
+_collect_concrete!(KMLElement)
 
-function __init__()
-    _collect_concrete!(KMLElement)    # helper is already defined
+#-----------------------------------------------------------------------------# parsing
+include("parsing.jl")
+
+#-----------------------------------------------------------------------------# exports
+export KMLFile, Enums, object
+
+for T in vcat(all_concrete_subtypes(KMLElement), all_abstract_subtypes(Object))
+    if T != KML.Pair
+        e = Symbol(replace(string(T), "KML." => ""))
+        @eval export $e
+    end
 end
-#! END WIP
 
 end #module

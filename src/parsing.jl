@@ -77,76 +77,72 @@ _object_slow(node::XML.Node) = begin
     nothing
 end
 
-function add_element!(o::Union{Object,KMLElement}, child::Node)
-    sym = tagsym(child)
+function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
+    # ── 0. pre‑compute a few things ───────────────────────────────
+    fname  = Symbol(replace(child.tag, ":" => "_"))           # tag → field name
+    simple = XML.is_simple(child)
 
-    # ──────────────────────────────────────────────────────────────────────────────────────
-    #  1. fast‑path for simple leaf tags (<name>, <description>, <coordinates>, etc.)
-    # ──────────────────────────────────────────────────────────────────────────────────────
-    if XML.is_simple(child)
-        fname = Symbol(replace(child.tag, ":" => "_"))
-        hasfield(typeof(o), fname) || return            # parent has no such field
-        txt = XML.value(XML.only(child))                # the text content
-        ftype = typemap(typeof(o))[fname]               # cached dict, O(1)
+    # ── 1. *Scalar* leaf node (fast path) ─────────────────────────
+    if simple
+        hasfield(typeof(parent), fname) || return             # ignore strangers
 
-        if ftype === String
-            val = txt
+        txt    = String(XML.value(XML.only(child)))           # raw text
+        ftype  = typemap(typeof(parent))[fname]               # cached Dict
+
+        # (a) the easy built‑ins
+        val = if ftype === String
+            txt
         elseif ftype <: Integer
-            val = parse(Int, txt)                       # id, visibility, etc.
+            txt == "" ? zero(ftype) : parse(ftype, txt)
         elseif ftype <: AbstractFloat
-            val = parse(Float64, txt)                   # longitude, latitude, etc.
+            txt == "" ? zero(ftype) : parse(ftype, txt)
         elseif ftype <: Bool
-            val = (txt == "1" || lowercase(txt) == "true")
-        elseif ftype <: Enum
-            val = ftype(txt)                            # altitudeMode, etc.
-        else                                            # fallback (rare)
-            # complex or container type (Vector, Union of Vectors, etc.)
-            # → let the original logic handle it (includes coordinates parsing)
-            autosetfield!(o, fname, txt)
-            return
+            txt == "1" || lowercase(txt) == "true"
+        elseif ftype <: Enums.AbstractKMLEnum
+            ftype(txt)
+        # (b) the special coordinate string
+        elseif fname === :coordinates
+            vec = [Tuple(parse.(Float64, split(v, ','))) for v in split(txt)]
+            (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
+        # (c) fallback – let the generic helper take a stab
+        else
+            autosetfield!(parent, fname, txt); return
         end
 
-        setfield!(o, fname, val)
+        setfield!(parent, fname, val)
         return
     end
 
-    # ──────────────────────────────────────────────────────────────────────────────────────
-    # 2. complex child → recurse
-    # ──────────────────────────────────────────────────────────────────────────────────────
-    o_child = object(child)
-
-    if !isnothing(o_child)
-        @goto child_is_object
-    else
-        @goto child_is_not_object
-    end
-
-    @label child_is_not_object
-    return if sym == :outerBoundaryIs
-        setfield!(o, :outerBoundaryIs, object(XML.only(child)))
-    elseif sym == :innerBoundaryIs
-        setfield!(o, :innerBoundaryIs, object.(XML.children(child)))
-    elseif hasfield(typeof(o), sym) && XML.is_simple(child)
-        autosetfield!(o, sym, XML.value(only(child)))
-    else
-        @warn "Unhandled case encountered while trying to add child with tag `$sym` to parent `$o`."
-    end
-
-    @label child_is_object
-    T = typeof(o_child)
-
-    for (field, FT) in typemap(o)
-        T <: FT && return setfield!(o, field, o_child)
-        if FT <: AbstractVector && T <: eltype(FT)
-            v = getfield(o, field)
-            if isnothing(v)
-                setfield!(o, field, eltype(FT)[])
+    # ── 2. complex child object – recurse ─────────────────────────
+    child_obj = object(child)
+    if child_obj !== nothing
+        # push it into the FIRST matching slot we find
+        T = typeof(child_obj)
+        for (field, FT) in typemap(parent)
+            if T <: FT
+                setfield!(parent, field, child_obj)
+                return
+            elseif FT <: AbstractVector && T <: eltype(FT)
+                vec = getfield(parent, field)
+                if vec === nothing
+                    setfield!(parent, field, eltype(FT)[])
+                    vec = getfield(parent, field)
+                end
+                push!(vec, child_obj)
+                return
             end
-            push!(getfield(o, field), o_child)
-            return
+        end
+        error("Unhandled child type: $(T) for parent $(typeof(parent))")
+    else
+        # legacy edge‑cases (<outerBoundaryIs>, <innerBoundaryIs>, …)
+        if fname === :outerBoundaryIs
+            setfield!(parent, :outerBoundaryIs, object(XML.only(child)))
+        elseif fname === :innerBoundaryIs
+            setfield!(parent, :innerBoundaryIs, object.(XML.children(child)))
+        else
+            @warn "Unhandled tag $fname for $(typeof(parent))"
         end
     end
-    error("This was not handled: $o_child")
 end
 
 
@@ -160,18 +156,26 @@ function add_attributes!(o::Union{Object,KMLElement}, source::Node)
     end
 end
 
-function autosetfield!(o::Union{Object,KMLElement}, sym::Symbol, x::String)
-    T = typemap(o)[sym]
-    T <: Number && return setfield!(o, sym, parse(T, x))
-    T <: AbstractString && return setfield!(o, sym, x)
-    T <: Enums.AbstractKMLEnum && return setfield!(o, sym, T(x))
-    if sym == :coordinates
-        val = [Tuple(parse.(Float64, split(v, ','))) for v in split(x)]
-        # coordinates can be a tuple or a vector of tuples, so we need to do this:
-        if fieldtype(typeof(o), sym) <: Union{Nothing, Tuple}
-            val = val[1]
-        end
-        return setfield!(o, sym, val)
+function autosetfield!(o::Union{Object,KMLElement}, sym::Symbol, txt::String)
+    ftype = typemap(o)[sym]
+
+    val  = if ftype <: AbstractString
+        txt
+    elseif ftype <: Integer
+        txt == "" ? zero(ftype) : parse(ftype, txt)
+    elseif ftype <: AbstractFloat
+        txt == "" ? zero(ftype) : parse(ftype, txt)
+    elseif ftype <: Bool
+        txt == "1" || lowercase(txt) == "true"
+    elseif ftype <: Enums.AbstractKMLEnum
+        ftype(txt)
+    elseif sym === :coordinates
+        vec = [Tuple(parse.(Float64, split(v, ','))) for v in split(txt)]
+        (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
+    else
+        txt   # last‑ditch: store the raw string
     end
-    setfield!(o, sym, x)
+
+    setfield!(o, sym, val)
+    return
 end
