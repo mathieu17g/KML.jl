@@ -102,7 +102,10 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
             ftype(txt)
         # (b) the special coordinate string
         elseif fname === :coordinates
-            vec = [Tuple(parse.(Float64, split(v, ','))) for v in split(txt)]
+            # Many public KML files omit the comma after an altitude `0`, leaving only a
+            # space before the next longitude.  Google Earth and GDAL accept this. See 
+            # https://kml4earth.appspot.com/kmlErrata.html#validation
+            vec = [Tuple(parse.(Float64, split(v, r"[,\s]+"))) for v in split(txt)]
             (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
         # (c) fallback – let the generic helper take a stab
         else
@@ -170,7 +173,10 @@ function autosetfield!(o::Union{Object,KMLElement}, sym::Symbol, txt::String)
     elseif ftype <: Enums.AbstractKMLEnum
         ftype(txt)
     elseif sym === :coordinates
-        vec = [Tuple(parse.(Float64, split(v, ','))) for v in split(txt)]
+        # Many public KML files omit the comma after an altitude `0`, leaving only a
+        # space before the next longitude.  Google Earth and GDAL accept this. See 
+        # https://kml4earth.appspot.com/kmlErrata.html#validation
+        vec = [Tuple(parse.(Float64, split(v, r"[,\s]+"))) for v in split(txt)]
         (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
     else
         txt   # last‑ditch: store the raw string
