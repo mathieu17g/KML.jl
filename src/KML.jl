@@ -23,8 +23,8 @@ macro def(name, definition)
 end
 
 @def altitude_mode_elements begin
-    altitudeMode::Union{Nothing, Enums.altitudeMode} = nothing
-    gx_altitudeMode::Union{Nothing, Enums.gx_altitudeMode} = nothing
+    altitudeMode::Union{Nothing,Enums.altitudeMode} = nothing
+    gx_altitudeMode::Union{Nothing,Enums.gx_altitudeMode} = nothing
 end
 
 # @option field::Type → field::Union{Nothing, Type} = nothing
@@ -68,8 +68,8 @@ abstract type KMLElement{attr_names} <: XML.AbstractXMLNode end
 
 const NoAttributes = KMLElement{()}
 
-function Base.show(io::IO, o::T) where {names, T <: KMLElement{names}}
-    printstyled(io, T; color=:light_cyan)
+function Base.show(io::IO, o::T) where {names,T<:KMLElement{names}}
+    printstyled(io, T; color = :light_cyan)
     print(io, ": [")
     show(io, Node(o))
     print(io, ']')
@@ -78,7 +78,7 @@ end
 # XML Interface
 XML.tag(o::KMLElement) = name(o)
 
-function XML.attributes(o::T) where {names, T <: KMLElement{names}}
+function XML.attributes(o::T) where {names,T<:KMLElement{names}}
     OrderedDict(k => getfield(o, k) for k in names if !isnothing(getfield(o, k)))
 end
 
@@ -92,7 +92,7 @@ function typemap(::Type{T}) where {T<:KMLElement}
     end
 end
 
-Base.:(==)(a::T, b::T) where {T<:KMLElement} = all(getfield(a,f) == getfield(b,f) for f in fieldnames(T))
+Base.:(==)(a::T, b::T) where {T<:KMLElement} = all(getfield(a, f) == getfield(b, f) for f in fieldnames(T))
 
 
 #-----------------------------------------------------------------------------# "Enums"
@@ -107,15 +107,18 @@ Base.convert(::Type{T}, x::String) where {T<:AbstractKMLEnum} = T(x)
 Base.string(o::AbstractKMLEnum) = o.value
 
 macro kml_enum(T, vals...)
-    esc(quote
+    esc(
+        quote
             struct $T <: AbstractKMLEnum
                 value::String
                 function $T(value)
-                string(value) ∈ $(string.(vals)) || error($(string(T)) * " ∉ " * join($vals, ", ") * ". Found: " * string(value))
+                    string(value) ∈ $(string.(vals)) ||
+                        error($(string(T)) * " ∉ " * join($vals, ", ") * ". Found: " * string(value))
                     new(string(value))
                 end
             end
-    end)
+        end,
+    )
 end
 @kml_enum altitudeMode clampToGround relativeToGround absolute
 @kml_enum gx_altitudeMode relativeToSeaFloor clampToSeaFloor
@@ -134,28 +137,28 @@ end
 
 #-----------------------------------------------------------------------------# KMLFile
 mutable struct KMLFile
-    children::Vector{Union{Node, KMLElement}}  # Union with XML.Node to allow Comment and CData
+    children::Vector{Union{Node,KMLElement}}  # Union with XML.Node to allow Comment and CData
 end
 KMLFile(content::KMLElement...) = KMLFile(collect(content))
 
-Base.push!(o::KMLFile, el::Union{Node, KMLElement}) = push!(o.children, el)
+Base.push!(o::KMLFile, el::Union{Node,KMLElement}) = push!(o.children, el)
 
 # TODO: print better summary of file
 function Base.show(io::IO, o::KMLFile)
     print(io, "KMLFile ")
-    printstyled(io, '(', Base.format_bytes(Base.summarysize(o)), ')'; color=:light_black)
+    printstyled(io, '(', Base.format_bytes(Base.summarysize(o)), ')'; color = :light_black)
 end
 
 function Node(o::KMLFile)
     children = [
         Node(XML.Declaration, nothing, OrderedDict("version" => "1.0", "encoding" => "UTF-8")),
-        Node(XML.Element, "kml", OrderedDict("xmlns" => "http://earth.google.com/kml/2.2"), nothing, Node.(o.children))
+        Node(XML.Element, "kml", OrderedDict("xmlns" => "http://earth.google.com/kml/2.2"), nothing, Node.(o.children)),
     ]
     Node(XML.Document, nothing, nothing, nothing, children)
 end
 
 
-Base.:(==)(a::KMLFile, b::KMLFile) = all(getfield(a,f) == getfield(b,f) for f in fieldnames(KMLFile))
+Base.:(==)(a::KMLFile, b::KMLFile) = all(getfield(a, f) == getfield(b, f) for f in fieldnames(KMLFile))
 
 # read
 Base.read(io::IO, ::Type{KMLFile}) = KMLFile(read(io, XML.Node))
@@ -168,7 +171,7 @@ end
 
 Base.parse(::Type{KMLFile}, s::AbstractString) = KMLFile(XML.parse(s, Node))
 
-Writable = Union{KMLFile, KMLElement, Node}
+Writable = Union{KMLFile,KMLElement,Node}
 
 write(io::IO, o::Writable; kw...) = XML.write(io, Node(o); kw...)
 write(file::AbstractString, o::Writable; kw...) = XML.write(file, Node(o); kw...)
@@ -182,7 +185,9 @@ abstract type Overlay <: Feature end
 abstract type Container <: Feature end
 
 abstract type Geometry <: Object end
-GeoInterface.isgeometry(o::Geometry) = true
+GeoInterface.isgeometry(::Geometry) = true
+GeoInterface.isgeometry(::Type{<:Geometry}) = true
+GeoInterface.crs(::Geometry) = GeoInterface.default_crs()
 
 abstract type StyleSelector <: Object end
 
@@ -278,13 +283,13 @@ end
 #-----------------------------------------------------------------------------# Region <: Object
 Base.@kwdef mutable struct Region <: Object
     @object
-    LatLonAltBox::LatLonAltBox = LatLonAltBox(north=0,south=0,east=0,west=0)
+    LatLonAltBox::LatLonAltBox = LatLonAltBox(north = 0, south = 0, east = 0, west = 0)
     @option Lod::Lod
 end
 #-----------------------------------------------------------------------------# gx_LatLonQuad <: Object
 Base.@kwdef mutable struct gx_LatLonQuad <: Object
     @object
-    coordinates::Vector{NTuple{2, Float64}} = [(0,0), (0,0), (0,0), (0,0)]
+    coordinates::Vector{NTuple{2,Float64}} = [(0, 0), (0, 0), (0, 0), (0, 0)]
     gx_LatLonQuad(id, targetId, coordinates) = (@assert length(coordinates) == 4; new(id, targetId, coordinates))
 end
 #-----------------------------------------------------------------------------# gx_Playlist <: Object
@@ -299,7 +304,8 @@ Base.@kwdef mutable struct Snippet <: KMLElement{(:maxLines,)}
     content::String = ""
     maxLines::Int = 2
 end
-showxml(io::IO, o::Snippet) = printstyled(io, "<Snippet maxLines=", repr(o.maxLines), '>', o.content, "</Snippet>", color=:light_yellow)
+showxml(io::IO, o::Snippet) =
+    printstyled(io, "<Snippet maxLines=", repr(o.maxLines), '>', o.content, "</Snippet>", color = :light_yellow)
 #-----------------------------------------------------------------------------# ExtendedData
 # TODO: Support ExtendedData.  This currently prints incorrectly.
 Base.@kwdef mutable struct ExtendedData <: NoAttributes
@@ -344,11 +350,13 @@ Base.@kwdef mutable struct Placemark <: Feature
     @feature
     @option Geometry::Geometry
 end
-GeoInterface.isfeature(o::Type{Placemark}) = true
-GeoInterface.trait(o::Placemark) = GeoInterface.FeatureTrait()
-GeoInterface.properties(o::Placemark) = NamedTuple(OrderedDict(f => getfield(o,f) for f in setdiff(fieldnames(Placemark), [:Geometry])))
-GeoInterface.geometry(o::Placemark) = o.Geometry
-
+GeoInterface.isfeature(::Placemark) = true
+GeoInterface.isfeature(::Type{Placemark}) = true
+const _PLACEMARK_PROP_FIELDS = Tuple(filter(!=(Symbol("Geometry")), fieldnames(Placemark)))
+GeoInterface.properties(p::Placemark) = (; (f => getfield(p, f) for f in _PLACEMARK_PROP_FIELDS)...)
+GeoInterface.trait(::Placemark) = GeoInterface.FeatureTrait()
+GeoInterface.geometry(p::Placemark) = p.Geometry
+GeoInterface.crs(::Placemark) = GeoInterface.default_crs()
 
 #-===========================================================================-# Geometries
 #-----------------------------------------------------------------------------# Point <: Geometry
@@ -356,11 +364,11 @@ Base.@kwdef mutable struct Point <: Geometry
     @object
     @option extrude::Bool
     @altitude_mode_elements
-    @option coordinates::Union{NTuple{2, Float64}, NTuple{3, Float64}}
+    @option coordinates::Union{NTuple{2,Float64},NTuple{3,Float64}}
 end
-GeoInterface.geomtrait(o::Point) = GeoInterface.PointTrait()
-GeoInterface.ncoord(::GeoInterface.PointTrait, o::Point) = length(o.coordinates)
-GeoInterface.getcoord(::GeoInterface.PointTrait, o::Point, i) = o.coordinates[i]
+GeoInterface.geomtrait(::Point) = GeoInterface.PointTrait()
+GeoInterface.ncoord(::GeoInterface.PointTrait, pt::Point) = length(pt.coordinates)
+GeoInterface.getcoord(::GeoInterface.PointTrait, pt::Point, i) = pt.coordinates[i]
 
 #-----------------------------------------------------------------------------# LineString <: Geometry
 Base.@kwdef mutable struct LineString <: Geometry
@@ -370,11 +378,13 @@ Base.@kwdef mutable struct LineString <: Geometry
     @option tessellate::Bool
     @altitude_mode_elements
     @option gx_drawOrder::Int
-    @option coordinates::Union{Vector{NTuple{2, Float64}}, Vector{NTuple{3, Float64}}}
+    @option coordinates::Union{Vector{NTuple{2,Float64}},Vector{NTuple{3,Float64}}}
 end
 GeoInterface.geomtrait(::LineString) = GeoInterface.LineStringTrait()
-GeoInterface.ngeom(::GeoInterface.LineStringTrait, o::LineString) = length(o.coordinates)
-GeoInterface.getgeom(::GeoInterface.LineStringTrait, o::LineString, i) = Point(coordinates=o.coordinates[i])
+GeoInterface.ncoord(::GeoInterface.LineStringTrait, ls::LineString) = length(ls.coordinates)
+GeoInterface.getcoord(::GeoInterface.LineStringTrait, ls::LineString, i::Int) = ls.coordinates[i]
+GeoInterface.ngeom(::GeoInterface.LineStringTrait, ls::LineString) = GeoInterface.ncoord(GeoInterface.LineStringTrait(), ls)
+GeoInterface.getgeom(::GeoInterface.LineStringTrait, ls::LineString, i) = GeoInterface.coordtuple(ls.coordinates[i]...)
 
 #-----------------------------------------------------------------------------# LinearRing <: Geometry
 Base.@kwdef mutable struct LinearRing <: Geometry
@@ -383,11 +393,13 @@ Base.@kwdef mutable struct LinearRing <: Geometry
     @option extrude::Bool
     @option tessellate::Bool
     @altitude_mode_elements
-    @option coordinates::Union{Vector{NTuple{2, Float64}}, Vector{NTuple{3, Float64}}}
+    @option coordinates::Union{Vector{NTuple{2,Float64}},Vector{NTuple{3,Float64}}}
 end
 GeoInterface.geomtrait(::LinearRing) = GeoInterface.LinearRingTrait()
-GeoInterface.ngeom(::GeoInterface.LinearRingTrait, o::LinearRing) = length(o.coordinates)
-GeoInterface.getgeom(::GeoInterface.LinearRingTrait, o::LinearRing, i) = Point(coordinates=o.coordinates[i])
+GeoInterface.ncoord(::GeoInterface.LinearRingTrait, lr::LinearRing) = length(lr.coordinates)
+GeoInterface.getcoord(::GeoInterface.LinearRingTrait, lr::LinearRing, i::Int) = lr.coordinates[i]
+GeoInterface.ngeom(::GeoInterface.LinearRingTrait, lr::LinearRing) = GeoInterface.ncoord(GeoInterface.LinearRingTrait(), lr)
+GeoInterface.getgeom(::GeoInterface.LinearRingTrait, lr, i) = GeoInterface.coordtuple(lr.coordinates[i]...)
 
 #-----------------------------------------------------------------------------# Polygon <: Geometry
 Base.@kwdef mutable struct Polygon <: Geometry
@@ -398,20 +410,26 @@ Base.@kwdef mutable struct Polygon <: Geometry
     outerBoundaryIs::LinearRing = LinearRing()
     @option innerBoundaryIs::Vector{LinearRing}
 end
-GeoInterface.geomtrait(o::Polygon) = GeoInterface.PolygonTrait()
-GeoInterface.ngeom(::GeoInterface.PolygonTrait, o::Polygon) = 1 + length(o.innerBoundaryIs)
-GeoInterface.getgeom(::GeoInterface.PolygonTrait, o::Polygon, i) = i == 1 ? o.outerBoundaryIs : o.innerBoundaryIs[i-1]
-GeoInterface.ncoord(::GeoInterface.PolygonTrait, o::Polygon) = length(first(o.outerBoundaryIs.coordinates))
+GeoInterface.geomtrait(::Polygon) = GeoInterface.PolygonTrait()
+GeoInterface.ngeom(::GeoInterface.PolygonTrait, poly::Polygon) = 1 + length(poly.innerBoundaryIs)
+GeoInterface.getgeom(::GeoInterface.PolygonTrait, poly::Polygon, i) =
+    i == 1 ? poly.outerBoundaryIs : poly.innerBoundaryIs[i-1]
+GeoInterface.ncoord(::GeoInterface.PolygonTrait, poly::Polygon) = length(poly.outerBoundaryIs.coordinates)
+GeoInterface.ncoord(::GeoInterface.PolygonTrait, poly::Polygon, ring::Int) =
+    ring == 1 ? length(poly.outerBoundaryIs.coordinates) : length(poly.innerBoundaryIs[ring-1].coordinates)
+GeoInterface.getcoord(::GeoInterface.PolygonTrait, poly::Polygon, ring::Int, i::Int) =
+    ring == 1 ? poly.outerBoundaryIs.coordinates[i] : poly.innerBoundaryIs[ring-1].coordinates[i]
 
 #-----------------------------------------------------------------------------# MultiGeometry <: Geometry
 Base.@kwdef mutable struct MultiGeometry <: Geometry
     @object
     @option Geometries::Vector{Geometry}
 end
-GeoInterface.geomtrait(geom::MultiGeometry) = GeoInterface.GeometryCollectionTrait()
-GeoInterface.ncoord(::GeoInterface.GeometryCollectionTrait, geom::MultiGeometry) = GeoInterface.ncoord(first(o.Geometries))
-GeoInterface.ngeom(::GeoInterface.GeometryCollectionTrait, geom::MultiGeometry) = length(o.Geometries)
-GeoInterface.getgeom(::GeoInterface.GeometryCollectionTrait, geom::MultiGeometry, i) = o.Geometries[i]
+GeoInterface.geomtrait(::MultiGeometry) = GeoInterface.GeometryCollectionTrait()
+GeoInterface.ngeom(::GeoInterface.GeometryCollectionTrait, mg::MultiGeometry) = length(mg.Geometries)
+GeoInterface.getgeom(::GeoInterface.GeometryCollectionTrait, mg::MultiGeometry, i::Int) = mg.Geometries[i]
+GeoInterface.ncoord(::GeoInterface.GeometryCollectionTrait, mg::MultiGeometry) =
+    isempty(mg.Geometries) ? 0 : GeoInterface.ncoord(GeoInterface.geomtrait(mg.Geometries[1]), mg.Geometries[1])
 
 #-----------------------------------------------------------------------------# Model <: Geometry
 Base.@kwdef mutable struct Alias <: NoAttributes
@@ -723,7 +741,9 @@ Base.@kwdef mutable struct LookAt <: AbstractView
 end
 
 #-----------------------------------------------------------------------------# build TAG_TO_TYPE
-"Recursively collect every concrete descendant of `root`."
+"""
+Recursively collect every concrete descendant of `root` and store it in the `TAG_TO_TYPE` dictionary.
+"""
 function _collect_concrete!(root)     # accept *any* type value
     for S in subtypes(root)
         if isabstracttype(S)

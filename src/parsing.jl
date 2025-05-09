@@ -7,10 +7,10 @@ coordinate_string(x::Vector) = join(coordinate_string.(x), '\n')
 # KMLElement → Node
 Node(o::T) where {T<:Enums.AbstractKMLEnum} = XML.Element(typetag(T), o.value)
 
-function Node(o::T) where {names, T <: KMLElement{names}}
+function Node(o::T) where {names,T<:KMLElement{names}}
     tag = typetag(T)
     attributes = Dict(string(k) => string(getfield(o, k)) for k in names if !isnothing(getfield(o, k)))
-    element_fields = filter(x -> !isnothing(getfield(o,x)), setdiff(fieldnames(T), names))
+    element_fields = filter(x -> !isnothing(getfield(o, x)), setdiff(fieldnames(T), names))
     isempty(element_fields) && return XML.Node(XML.Element, tag, attributes)
     children = Node[]
     for field in element_fields
@@ -56,13 +56,13 @@ function object(node::XML.Node)
         return String(XML.value(only(node)))   # plain text
     end
     # 4.   fallback to the old generic code ------------------------
-    return _object_slow(node)                 
+    return _object_slow(node)
 end
 
 # original implementation, renamed
 _object_slow(node::XML.Node) = begin
     sym = tagsym(node)
-    if sym in names(Enums, all=true)
+    if sym in names(Enums, all = true)
         return getproperty(Enums, sym)(XML.value(only(node)))
     end
     if sym in names(KML) || sym == :Pair
@@ -77,17 +77,28 @@ _object_slow(node::XML.Node) = begin
     nothing
 end
 
+function _parse_coordinates(txt::AbstractString)
+    nums = parse.(Float64, filter(!isempty, split(txt, r"[,\s]+")))
+    if mod(length(nums), 3) == 0             # triples → (lon,lat,alt)
+        return [Tuple(@view nums[i:i+2]) for i = 1:3:length(nums)]
+    elseif mod(length(nums), 2) == 0         # pairs   → (lon,lat)
+        return [Tuple(@view nums[i:i+1]) for i = 1:2:length(nums)]
+    else
+        error("Coordinate list length $(length(nums)) is not a multiple of 2 or 3")
+    end
+end
+
 function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
     # ── 0. pre‑compute a few things ───────────────────────────────
-    fname  = Symbol(replace(child.tag, ":" => "_"))           # tag → field name
+    fname = Symbol(replace(child.tag, ":" => "_"))      # tag → field name
     simple = XML.is_simple(child)
 
     # ── 1. *Scalar* leaf node (fast path) ─────────────────────────
     if simple
-        hasfield(typeof(parent), fname) || return             # ignore strangers
+        hasfield(typeof(parent), fname) || return       # ignore strangers
 
-        txt    = String(XML.value(XML.only(child)))           # raw text
-        ftype  = typemap(typeof(parent))[fname]               # cached Dict
+        txt = String(XML.value(XML.only(child)))        # raw text
+        ftype = typemap(typeof(parent))[fname]          # cached Dict
 
         # (a) the easy built‑ins
         val = if ftype === String
@@ -102,14 +113,12 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
             ftype(txt)
         # (b) the special coordinate string
         elseif fname === :coordinates
-            # Many public KML files omit the comma after an altitude `0`, leaving only a
-            # space before the next longitude.  Google Earth and GDAL accept this. See 
-            # https://kml4earth.appspot.com/kmlErrata.html#validation
-            vec = [Tuple(parse.(Float64, split(v, r"[,\s]+"))) for v in split(txt)]
-            (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
+            vec = _parse_coordinates(txt)
+            val = (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
         # (c) fallback – let the generic helper take a stab
         else
-            autosetfield!(parent, fname, txt); return
+            autosetfield!(parent, fname, txt)
+            return
         end
 
         setfield!(parent, fname, val)
@@ -154,15 +163,21 @@ tagsym(x::Node) = tagsym(XML.tag(x))
 
 function add_attributes!(o::Union{Object,KMLElement}, source::Node)
     attr = XML.attributes(source)
-    !isnothing(attr) && for (k,v) in attr
-        autosetfield!(o, tagsym(k), v)
+    isnothing(attr) && return
+
+    tm = typemap(o)                             # cached Dict
+    for (k, v) in attr
+        startswith(k, "xmlns") && continue      # skip namespace decls
+        sym = tagsym(k)
+        haskey(tm, sym) || continue             # skip unknown attrs
+        autosetfield!(o, sym, v)
     end
 end
 
 function autosetfield!(o::Union{Object,KMLElement}, sym::Symbol, txt::String)
     ftype = typemap(o)[sym]
 
-    val  = if ftype <: AbstractString
+    val = if ftype <: AbstractString
         txt
     elseif ftype <: Integer
         txt == "" ? zero(ftype) : parse(ftype, txt)
@@ -172,12 +187,9 @@ function autosetfield!(o::Union{Object,KMLElement}, sym::Symbol, txt::String)
         txt == "1" || lowercase(txt) == "true"
     elseif ftype <: Enums.AbstractKMLEnum
         ftype(txt)
-    elseif sym === :coordinates
-        # Many public KML files omit the comma after an altitude `0`, leaving only a
-        # space before the next longitude.  Google Earth and GDAL accept this. See 
-        # https://kml4earth.appspot.com/kmlErrata.html#validation
-        vec = [Tuple(parse.(Float64, split(v, r"[,\s]+"))) for v in split(txt)]
-        (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
+    elseif fname === :coordinates
+        vec = _parse_coordinates(txt)
+        val = (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
     else
         txt   # last‑ditch: store the raw string
     end
