@@ -4,6 +4,11 @@ using OrderedCollections: OrderedDict
 using GeoInterface: GeoInterface
 import XML: XML, Node
 using InteractiveUtils: subtypes
+using StaticArrays
+
+#-----------------------------------------------------------------------------# Constants
+const Coord2 = SVector{2,Float64}
+const Coord3 = SVector{3,Float64}
 
 #-----------------------------------------------------------------------------# Memoization constants
 # object types are stored as symbols in the TAG_TO_TYPE dictionary
@@ -289,7 +294,7 @@ end
 #-----------------------------------------------------------------------------# gx_LatLonQuad <: Object
 Base.@kwdef mutable struct gx_LatLonQuad <: Object
     @object
-    coordinates::Vector{NTuple{2,Float64}} = [(0, 0), (0, 0), (0, 0), (0, 0)]
+    coordinates::Vector{Coord2} = [(0, 0), (0, 0), (0, 0), (0, 0)]
     gx_LatLonQuad(id, targetId, coordinates) = (@assert length(coordinates) == 4; new(id, targetId, coordinates))
 end
 #-----------------------------------------------------------------------------# gx_Playlist <: Object
@@ -364,7 +369,7 @@ Base.@kwdef mutable struct Point <: Geometry
     @object
     @option extrude::Bool
     @altitude_mode_elements
-    @option coordinates::Union{NTuple{2,Float64},NTuple{3,Float64}}
+    @option coordinates::Union{Coord2,Coord3}
 end
 GeoInterface.geomtrait(::Point) = GeoInterface.PointTrait()
 GeoInterface.ncoord(::GeoInterface.PointTrait, pt::Point) = length(pt.coordinates)
@@ -378,13 +383,13 @@ Base.@kwdef mutable struct LineString <: Geometry
     @option tessellate::Bool
     @altitude_mode_elements
     @option gx_drawOrder::Int
-    @option coordinates::Union{Vector{NTuple{2,Float64}},Vector{NTuple{3,Float64}}}
+    @option coordinates::Union{Vector{Coord2},Vector{Coord3}}
 end
 GeoInterface.geomtrait(::LineString) = GeoInterface.LineStringTrait()
 GeoInterface.ncoord(::GeoInterface.LineStringTrait, ls::LineString) = length(ls.coordinates)
 GeoInterface.getcoord(::GeoInterface.LineStringTrait, ls::LineString, i::Int) = ls.coordinates[i]
 GeoInterface.ngeom(::GeoInterface.LineStringTrait, ls::LineString) = GeoInterface.ncoord(GeoInterface.LineStringTrait(), ls)
-GeoInterface.getgeom(::GeoInterface.LineStringTrait, ls::LineString, i) = GeoInterface.coordtuple(ls.coordinates[i]...)
+GeoInterface.getgeom(::GeoInterface.LineStringTrait, ls::LineString, i) = ls.coordinates[i]
 
 #-----------------------------------------------------------------------------# LinearRing <: Geometry
 Base.@kwdef mutable struct LinearRing <: Geometry
@@ -393,13 +398,15 @@ Base.@kwdef mutable struct LinearRing <: Geometry
     @option extrude::Bool
     @option tessellate::Bool
     @altitude_mode_elements
-    @option coordinates::Union{Vector{NTuple{2,Float64}},Vector{NTuple{3,Float64}}}
+    @option coordinates::Union{Vector{Coord2},Vector{Coord3}}
 end
 GeoInterface.geomtrait(::LinearRing) = GeoInterface.LinearRingTrait()
-GeoInterface.ncoord(::GeoInterface.LinearRingTrait, lr::LinearRing) = length(lr.coordinates)
-GeoInterface.getcoord(::GeoInterface.LinearRingTrait, lr::LinearRing, i::Int) = lr.coordinates[i]
+GeoInterface.ncoord(::GeoInterface.LinearRingTrait, lr::LinearRing) =
+    (lr.coordinates === nothing) ? 0 : length(lr.coordinates)
+GeoInterface.getcoord(::GeoInterface.LinearRingTrait, lr::LinearRing, i::Int) =
+    lr.coordinates === nothing ? error("LinearRing has no coordinates") : lr.coordinates[i]
 GeoInterface.ngeom(::GeoInterface.LinearRingTrait, lr::LinearRing) = GeoInterface.ncoord(GeoInterface.LinearRingTrait(), lr)
-GeoInterface.getgeom(::GeoInterface.LinearRingTrait, lr, i) = GeoInterface.coordtuple(lr.coordinates[i]...)
+GeoInterface.getgeom(::GeoInterface.LinearRingTrait, lr::LinearRing, i) = lr.coordinates[i]
 
 #-----------------------------------------------------------------------------# Polygon <: Geometry
 Base.@kwdef mutable struct Polygon <: Geometry
@@ -411,12 +418,26 @@ Base.@kwdef mutable struct Polygon <: Geometry
     @option innerBoundaryIs::Vector{LinearRing}
 end
 GeoInterface.geomtrait(::Polygon) = GeoInterface.PolygonTrait()
-GeoInterface.ngeom(::GeoInterface.PolygonTrait, poly::Polygon) = 1 + length(poly.innerBoundaryIs)
+GeoInterface.ngeom(::GeoInterface.PolygonTrait, poly::Polygon) =
+    1 + (poly.innerBoundaryIs === nothing ? 0 : length(poly.innerBoundaryIs))
 GeoInterface.getgeom(::GeoInterface.PolygonTrait, poly::Polygon, i) =
     i == 1 ? poly.outerBoundaryIs : poly.innerBoundaryIs[i-1]
-GeoInterface.ncoord(::GeoInterface.PolygonTrait, poly::Polygon) = length(poly.outerBoundaryIs.coordinates)
+GeoInterface.ncoord(::GeoInterface.PolygonTrait, poly::Polygon) =
+    (poly.outerBoundaryIs === nothing || poly.outerBoundaryIs.coordinates === nothing) ? 0 :
+    length(poly.outerBoundaryIs.coordinates)
+
 GeoInterface.ncoord(::GeoInterface.PolygonTrait, poly::Polygon, ring::Int) =
-    ring == 1 ? length(poly.outerBoundaryIs.coordinates) : length(poly.innerBoundaryIs[ring-1].coordinates)
+    if ring == 1
+        (poly.outerBoundaryIs === nothing || poly.outerBoundaryIs.coordinates === nothing) ? 0 :
+        length(poly.outerBoundaryIs.coordinates)
+    else
+        idx = ring - 1
+        (
+            poly.innerBoundaryIs === nothing ||
+            idx > length(poly.innerBoundaryIs) ||
+            poly.innerBoundaryIs[idx].coordinates === nothing
+        ) ? 0 : length(poly.innerBoundaryIs[idx].coordinates)
+    end
 GeoInterface.getcoord(::GeoInterface.PolygonTrait, poly::Polygon, ring::Int, i::Int) =
     ring == 1 ? poly.outerBoundaryIs.coordinates[i] : poly.innerBoundaryIs[ring-1].coordinates[i]
 
@@ -426,7 +447,8 @@ Base.@kwdef mutable struct MultiGeometry <: Geometry
     @option Geometries::Vector{Geometry}
 end
 GeoInterface.geomtrait(::MultiGeometry) = GeoInterface.GeometryCollectionTrait()
-GeoInterface.ngeom(::GeoInterface.GeometryCollectionTrait, mg::MultiGeometry) = length(mg.Geometries)
+GeoInterface.ngeom(::GeoInterface.GeometryCollectionTrait, mg::MultiGeometry) =
+    (mg.Geometries === nothing ? 0 : length(mg.Geometries))
 GeoInterface.getgeom(::GeoInterface.GeometryCollectionTrait, mg::MultiGeometry, i::Int) = mg.Geometries[i]
 GeoInterface.ncoord(::GeoInterface.GeometryCollectionTrait, mg::MultiGeometry) =
     isempty(mg.Geometries) ? 0 : GeoInterface.ncoord(GeoInterface.geomtrait(mg.Geometries[1]), mg.Geometries[1])
@@ -757,8 +779,30 @@ function _collect_concrete!(root)     # accept *any* type value
 end
 _collect_concrete!(KMLElement)
 
+# ─────────────────── pretty‑print geometries ─────────────────────
+import Base: show
+
+function show(io::IO, g::Geometry)
+    # Only colour when *both* keys are true *and* we’re writing to a TTY
+    color_ok = (io isa Base.TTY) && get(io, :color, false)
+
+    trait = GeoInterface.geomtrait(g)
+    nvert = GeoInterface.ncoord(trait, g)
+    nparts = GeoInterface.ngeom(trait, g)
+
+    if color_ok
+        printstyled(io, nameof(typeof(g)); color = :cyan)
+    else
+        print(io, nameof(typeof(g)))
+    end
+    print(io, "(vertices=", nvert, ", parts=", nparts, ')')
+end
+
 #-----------------------------------------------------------------------------# parsing
 include("parsing.jl")
+
+#-----------------------------------------------------------------------------# TablesInterface.jl
+include("TablesInterface.jl")
 
 #-----------------------------------------------------------------------------# exports
 export KMLFile, Enums, object

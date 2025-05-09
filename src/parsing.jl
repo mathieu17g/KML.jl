@@ -79,10 +79,13 @@ end
 
 function _parse_coordinates(txt::AbstractString)
     nums = parse.(Float64, filter(!isempty, split(txt, r"[,\s]+")))
-    if mod(length(nums), 3) == 0             # triples → (lon,lat,alt)
-        return [Tuple(@view nums[i:i+2]) for i = 1:3:length(nums)]
-    elseif mod(length(nums), 2) == 0         # pairs   → (lon,lat)
-        return [Tuple(@view nums[i:i+1]) for i = 1:2:length(nums)]
+
+    if mod(length(nums), 3) == 0           # lon‑lat‑alt triples
+        return [ SVector{3}(nums[i], nums[i+1], nums[i+2])
+                 for i = 1:3:length(nums) ]
+    elseif mod(length(nums), 2) == 0       # lon‑lat pairs
+        return [ SVector{2}(nums[i], nums[i+1])
+                 for i = 1:2:length(nums) ]
     else
         error("Coordinate list length $(length(nums)) is not a multiple of 2 or 3")
     end
