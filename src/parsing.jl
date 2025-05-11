@@ -1,7 +1,61 @@
+# turn an XML.Node into a KMLFile by finding the <kml> element
+function KMLFile(doc::XML.Node)
+    i = findfirst(x -> x.tag == "kml", XML.children(doc))
+    isnothing(i) && error("No <kml> tag found in file.")
+    KML.KMLFile(map(KML.object, XML.children(doc[i])))
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  I/O glue: read/write KMLFile via XML
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal helper: pull the <kml> element out of an XML.Document node
+function _parse_kmlfile(doc::XML.Node)
+    i = findfirst(x -> x.tag == "kml", XML.children(doc))
+    isnothing(i) && error("No <kml> tag found in file.")
+    xml_children = XML.children(doc[i])
+    kml_children = Vector{Union{Node, KMLElement}}(undef, length(xml_children)) # Preallocate
+    for (idx, child_node) in enumerate(xml_children)
+        kml_children[idx] = object(child_node) # Populate
+    end
+    KMLFile(kml_children)
+end
+
+# Read from any IO stream
+function Base.read(io::IO, ::Type{KMLFile})
+    doc = xmlread(io, Node)        # parse into XML.Node
+    _parse_kmlfile(doc)
+end
+
+# Read from a filename
+function Base.read(path::AbstractString, ::Type{KMLFile})
+    xmlread(path, Node) |> _parse_kmlfile
+end
+
+# Parse from an in-memory string
+Base.parse(::Type{KMLFile}, s::AbstractString) = _parse_kmlfile(xmlparse(s, Node))
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  write back out (XML.write) for any of our core types
+# ─────────────────────────────────────────────────────────────────────────────
+
+# writable union for XML.write
+const Writable = Union{KMLFile,KMLElement,XML.Node}
+
+function Base.write(io::IO, o::Writable; kw...)
+    xmlwrite(io, Node(o); kw...)
+end
+
+function Base.write(path::AbstractString, o::Writable; kw...)
+    xmlwrite(path, Node(o); kw...)
+end
+
+Base.write(o::Writable; kw...) = Base.write(stdout, o; kw...)
+
 #-----------------------------------------------------------------------------# XML.Node ←→ KMLElement
 typetag(T) = replace(string(T), r"([a-zA-Z]*\.)" => "", "_" => ":")
 
 coordinate_string(x::Tuple) = join(x, ',')
+coordinate_string(x::StaticArraysCore.SVector) = join(x, ',')
 coordinate_string(x::Vector) = join(coordinate_string.(x), '\n')
 
 # KMLElement → Node
@@ -59,13 +113,15 @@ function object(node::XML.Node)
     return _object_slow(node)
 end
 
-# original implementation, renamed
-_object_slow(node::XML.Node) = begin
+const KML_NAMES_SET = Set(names(KML; all=true, imported=true)) # Get all names in KML
+const ENUM_NAMES_SET = Set(names(Enums; all=true))          # Get all names in Enums
+
+function _object_slow(node::XML.Node) 
     sym = tagsym(node)
-    if sym in names(Enums, all = true)
+    if sym in ENUM_NAMES_SET 
         return getproperty(Enums, sym)(XML.value(only(node)))
     end
-    if sym in names(KML) || sym == :Pair
+    if sym in KML_NAMES_SET || sym == :Pair
         T = getproperty(KML, sym)
         o = T()
         add_attributes!(o, node)
@@ -74,20 +130,48 @@ _object_slow(node::XML.Node) = begin
         end
         return o
     end
-    nothing
+    return nothing # Ensure a return path if no conditions met
 end
 
-function _parse_coordinates(txt::AbstractString)
-    nums = parse.(Float64, filter(!isempty, split(txt, r"[,\s]+")))
+const COORD_RE = r"[,\s]+"     # one-time compile
 
-    if mod(length(nums), 3) == 0           # lon‑lat‑alt triples
-        return [ SVector{3}(nums[i], nums[i+1], nums[i+2])
-                 for i = 1:3:length(nums) ]
-    elseif mod(length(nums), 2) == 0       # lon‑lat pairs
-        return [ SVector{2}(nums[i], nums[i+1])
-                 for i = 1:2:length(nums) ]
+function _parse_coordinates(txt::AbstractString)
+    parts = split(txt, COORD_RE; keepempty=false)
+    len_parts = length(parts)
+
+    if mod(len_parts, 3) == 0
+        n_coords = len_parts ÷ 3
+        # This assumes suggestion 1 (pre-allocation of result vector) is in place
+        result = Vector{SVector{3, Float64}}(undef, n_coords)
+        for i in 1:n_coords
+            offset = (i - 1) * 3
+            
+            # Using Parsers.jl for parsing
+            # Parsers.parse will throw an error if parsing fails, which is usually
+            # desired for malformed coordinate data.
+            # It directly accepts SubString{String}, which `parts` contains.
+            x = Parsers.parse(Float64, parts[offset+1])
+            y = Parsers.parse(Float64, parts[offset+2])
+            z = Parsers.parse(Float64, parts[offset+3])
+            
+            result[i] = SVector{3,Float64}(x, y, z)
+        end
+        return result
+    elseif mod(len_parts, 2) == 0
+        n_coords = len_parts ÷ 2
+        result = Vector{SVector{2, Float64}}(undef, n_coords)
+        for i in 1:n_coords
+            offset = (i - 1) * 2
+            
+            x = Parsers.parse(Float64, parts[offset+1])
+            y = Parsers.parse(Float64, parts[offset+2])
+            
+            result[i] = SVector{2,Float64}(x, y)
+        end
+        return result
     else
-        error("Coordinate list length $(length(nums)) is not a multiple of 2 or 3")
+        # Consider making the error message more informative, e.g., include part of 'txt'
+        error("Coordinate list length $(len_parts) from string snippet '$(first(txt, 50))...' is not a multiple of 2 or 3")
     end
 end
 
@@ -114,11 +198,11 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
             txt == "1" || lowercase(txt) == "true"
         elseif ftype <: Enums.AbstractKMLEnum
             ftype(txt)
-        # (b) the special coordinate string
+            # (b) the special coordinate string
         elseif fname === :coordinates
             vec = _parse_coordinates(txt)
             val = (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
-        # (c) fallback – let the generic helper take a stab
+            # (c) fallback – let the generic helper take a stab
         else
             autosetfield!(parent, fname, txt)
             return
