@@ -13,7 +13,7 @@ function _parse_kmlfile(doc::XML.Node)
     i = findfirst(x -> x.tag == "kml", XML.children(doc))
     isnothing(i) && error("No <kml> tag found in file.")
     xml_children = XML.children(doc[i])
-    kml_children = Vector{Union{Node, KMLElement}}(undef, length(xml_children)) # Preallocate
+    kml_children = Vector{Union{Node,KMLElement}}(undef, length(xml_children)) # Preallocate
     for (idx, child_node) in enumerate(xml_children)
         kml_children[idx] = object(child_node) # Populate
     end
@@ -87,11 +87,17 @@ function Node(o::T) where {names,T<:KMLElement{names}}
 end
 
 #-----------------------------------------------------------------------------# object (or enum)
+
+const ENUM_NAMES_SET = Set(names(Enums; all = true))             # Get all names in Enums
+
 # Fast object()  – deal with the handful of tags we care about
 function object(node::XML.Node)
     sym = tagsym(node)
-
-    # 1.   tags that map straight to KML types  --------------------
+    # ──  0. tags that ARE NOT KML types themselves ───────────────────────────
+    if sym === :outerBoundaryIs || sym === :innerBoundaryIs
+        return nothing
+    end
+    # ──  1. tags that map straight to KML types  ─────────────────────────────
     if haskey(TAG_TO_TYPE, sym)
         T = TAG_TO_TYPE[sym]
         o = T()                               # no reflection
@@ -101,51 +107,104 @@ function object(node::XML.Node)
         end
         return o
     end
-    # 2.   enums ---------------------------------------------------
-    if sym in names(Enums, all = true)
+    # ──  2. enums  ───────────────────────────────────────────────────────────
+    if sym in ENUM_NAMES_SET
         return getproperty(Enums, sym)(XML.value(only(node)))
     end
-    # 3.   <name>, <description>, … fast scalar leafs -------------
+    # ──  3. <name>, <description>, … fast scalar leafs  ──────────────────────
     if XML.is_simple(node)
         return String(XML.value(only(node)))   # plain text
     end
-    # 4.   fallback to the old generic code ------------------------
+    # ──  4. fallback to the generic code with logging  ───────────────────────
     return _object_slow(node)
 end
 
-const KML_NAMES_SET = Set(names(KML; all=true, imported=true)) # Get all names in KML
-const ENUM_NAMES_SET = Set(names(Enums; all=true))          # Get all names in Enums
+const KML_NAMES_SET = Set(names(KML; all = true, imported = true)) # Get all names in KML
 
-function _object_slow(node::XML.Node) 
-    sym = tagsym(node)
-    if sym in ENUM_NAMES_SET 
+function _object_slow(node::XML.Node)
+    original_tag_name = XML.tag(node)
+    sym = tagsym(original_tag_name) # Convert "namespace:tag" to :namespace_tag or :tag
+
+    # This debug message helps trace when this fallback is even entered.
+    # To see @debug messages, run `using Logging; global_logger(ConsoleLogger(stderr, Logging.Debug))`
+    # at the start of your Julia session or script.
+    @debug "Entered _object_slow for tag: '$original_tag_name' (symbol: :$sym). This means the tag was not handled by:" sympath =
+        ("  - Explicit structural tag checks (e.g., for :outerBoundaryIs) in `object()`") *
+        "\n  - The primary `TAG_TO_TYPE` lookup in `object()`." *
+        "\n  - The Enum check (using `ENUM_NAMES_SET`) in `object()`." *
+        "\n  - The simple text content check (`XML.is_simple`) in `object()`."
+
+    # Path 1: Is it an Enum that was perhaps missed by the main object() check?
+    # (This check might be redundant if the main object() function's Enum check is robust
+    #  and uses the same ENUM_NAMES_SET, but kept for safety or if _object_slow can be called from other paths)
+    if sym in ENUM_NAMES_SET
+        @debug (
+            "Tag '$original_tag_name' (symbol :$sym) is being parsed as an Enum by `_object_slow`. " *
+            "Consider if this specific Enum should also be optimized in the main `object` function's Enum handling path."
+        )
         return getproperty(Enums, sym)(XML.value(only(node)))
     end
-    if sym in KML_NAMES_SET || sym == :Pair
+
+    # Path 2: Is it a KML type defined in the KML module but somehow missed by TAG_TO_TYPE?
+    # This is the case where @info was previously used.
+    if sym in KML_NAMES_SET || sym == :Pair # Assuming :Pair is a special KML-like type here
+        @warn begin # Changed to @warn as this implies a missing optimization.
+            "Performance Hint: KML type `:$sym` (from tag `'$original_tag_name'`) is being instantiated " *
+            "via reflection in `_object_slow`. This is a fallback and less efficient.\n" *
+            "ACTION: To improve performance and maintainability, ensure that the tag `'$original_tag_name'` " *
+            "correctly maps to the Julia type `KML.$(sym)` in the `TAG_TO_TYPE` dictionary.\n" *
+            "  - Verify that the Julia struct `KML.$(sym)` is a concrete subtype of `KMLElement` " *
+            "so it's automatically collected by `_collect_concrete!`.\n" *
+            "  - Or, if it's a special case, add a manual mapping for `:$sym` to `TAG_TO_TYPE` during initialization.\n" *
+            "  - Double-check that `tagsym(\"$original_tag_name\")` produces exactly `:$sym` as expected for the dictionary key."
+        end
+
+        # Object instantiation logic
         T = getproperty(KML, sym)
         o = T()
         add_attributes!(o, node)
-        for child in XML.children(node)
-            add_element!(o, child)
+        for child_xml_node in XML.children(node) # Ensure children are processed
+            add_element!(o, child_xml_node)
         end
         return o
     end
-    return nothing # Ensure a return path if no conditions met
+
+    # Path 3: Fallthrough - truly unhandled or unrecognized tag by this KML parser's logic.
+    # This means object() will return 'nothing' for this tag.
+    # This 'nothing' might be handled by special logic in `add_element!` (e.g., for unknown tags within a known parent),
+    # or it might result in the tag being effectively ignored if no specific handling exists.
+    @warn begin
+        "Unhandled Tag: Tag `'$original_tag_name'` (symbol `:$sym`) was not recognized as a known KML type, " *
+        "Enum, or handled structural element by `_object_slow`. `object()` will return `nothing`.\n" *
+        "DEVELOPER ACTION: Evaluate this tag:\n" *
+        "  1. Is `'$original_tag_name'` a standard KML element that this parser should support?\n" *
+        "     - If YES: Define a corresponding Julia struct (e.g., `struct $(uppercasefirst(string(sym))) <: KMLElement ... end`), " *
+        "       and ensure it's added to `TAG_TO_TYPE` (usually automatic if it's a concrete subtype of `KMLElement`).\n" *
+        "  2. Is `'$original_tag_name'` a structural tag (like `<coordinates>`, `<outerBoundaryIs>`) that needs special " *
+        "     parsing logic within `add_element!` after `object()` returns `nothing`?\n" *
+        "     - If YES, and it's not already handled: The main `object()` function should ideally return `nothing` for it *before* " *
+        "       calling `_object_slow` (by adding an explicit check `if sym === :$sym return nothing end`). " *
+        "       Then, ensure `add_element!` has the required logic for `:$sym`.\n" *
+        "  3. Is this tag vendor-specific, deprecated, or intentionally unsupported?\n" *
+        "     - If YES: This warning might be acceptable, or you could add `:$sym` to a list of known-to-ignore tags " *
+        "       in the main `object()` function to suppress this warning for common, intentionally ignored tags."
+    end
+    return nothing
 end
 
 const COORD_RE = r"[,\s]+"     # one-time compile
 
 function _parse_coordinates(txt::AbstractString)
-    parts = split(txt, COORD_RE; keepempty=false)
+    parts = split(txt, COORD_RE; keepempty = false)
     len_parts = length(parts)
 
     if mod(len_parts, 3) == 0
         n_coords = len_parts ÷ 3
         # This assumes suggestion 1 (pre-allocation of result vector) is in place
-        result = Vector{SVector{3, Float64}}(undef, n_coords)
-        for i in 1:n_coords
+        result = Vector{SVector{3,Float64}}(undef, n_coords)
+        for i = 1:n_coords
             offset = (i - 1) * 3
-            
+
             # Using Parsers.jl for parsing
             # Parsers.parse will throw an error if parsing fails, which is usually
             # desired for malformed coordinate data.
@@ -153,19 +212,19 @@ function _parse_coordinates(txt::AbstractString)
             x = Parsers.parse(Float64, parts[offset+1])
             y = Parsers.parse(Float64, parts[offset+2])
             z = Parsers.parse(Float64, parts[offset+3])
-            
+
             result[i] = SVector{3,Float64}(x, y, z)
         end
         return result
     elseif mod(len_parts, 2) == 0
         n_coords = len_parts ÷ 2
-        result = Vector{SVector{2, Float64}}(undef, n_coords)
-        for i in 1:n_coords
+        result = Vector{SVector{2,Float64}}(undef, n_coords)
+        for i = 1:n_coords
             offset = (i - 1) * 2
-            
+
             x = Parsers.parse(Float64, parts[offset+1])
             y = Parsers.parse(Float64, parts[offset+2])
-            
+
             result[i] = SVector{2,Float64}(x, y)
         end
         return result
