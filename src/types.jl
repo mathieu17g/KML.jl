@@ -661,3 +661,6 @@ function _collect_concrete!(root)
     end
 end
 _collect_concrete!(KMLElement)
+# Manual mapping for <Pair> tag to KML.StyleMapPair
+# This ensures correct and efficient parsing of <Pair> elements within a <StyleMap>.
+TAG_TO_TYPE[:Pair] = KML.StyleMapPair

@@ -5,7 +5,7 @@ using OrderedCollections: OrderedDict
 import XML: XML, read as xmlread, parse as xmlparse, write as xmlwrite, Node # xml parsing / writing
 using InteractiveUtils: subtypes    # all subtypes of a type
 using StaticArrays                  # small fixed‑size coordinate vectors
-using Parsers
+using Automa, Parsers
 
 # ─── split implementation files ──────────────────────────────────────────────
 include("types.jl")             # all KML data types & helpers (no GeoInterface)

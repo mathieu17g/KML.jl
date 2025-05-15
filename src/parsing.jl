@@ -192,45 +192,105 @@ function _object_slow(node::XML.Node)
     return nothing
 end
 
-const COORD_RE = r"[,\s]+"     # one-time compile
+# ───  Coordinates parsing function using Automata.jl  ─────────────────────────────────────
 
-function _parse_coordinates(txt::AbstractString)
-    parts = split(txt, COORD_RE; keepempty = false)
-    len_parts = length(parts)
+# ------------------------------------------------------------------
+# 1.  Build the regular expression that recognises a 2‑D or 3‑D
+#     coordinate list of the form  "x,y[,z][ … repeated … ]"
+# ------------------------------------------------------------------
 
-    if mod(len_parts, 3) == 0
-        n_coords = len_parts ÷ 3
-        # This assumes suggestion 1 (pre-allocation of result vector) is in place
-        result = Vector{SVector{3,Float64}}(undef, n_coords)
-        for i = 1:n_coords
-            offset = (i - 1) * 3
+#? const coord_number_re = rep1(re"[0-9.+\-Ee]+") # Alternative
+const coord_number_re = rep1(re"[^\t\n\r ,]+")
+const coord_delim_re = rep1(re"[\t\n\r ,]+")
 
-            # Using Parsers.jl for parsing
-            # Parsers.parse will throw an error if parsing fails, which is usually
-            # desired for malformed coordinate data.
-            # It directly accepts SubString{String}, which `parts` contains.
-            x = Parsers.parse(Float64, parts[offset+1])
-            y = Parsers.parse(Float64, parts[offset+2])
-            z = Parsers.parse(Float64, parts[offset+3])
+const _coord_number_actions = onexit!(onenter!(coord_number_re, :mark), :number)
 
-            result[i] = SVector{3,Float64}(x, y, z)
+const _coord_machine_pattern = opt(_coord_number_actions * rep(coord_delim_re * _coord_number_actions)) * opt(coord_delim_re)
+
+const COORDINATE_MACHINE = compile(_coord_machine_pattern)
+
+# ------------------------------------------------------------------
+# 2.  Action table used by the FSM — created once, marked `const`
+# ------------------------------------------------------------------
+const PARSE_OPTIONS = Parsers.Options()#delim=nothing, quoted=false, stripwhitespace = false)
+const AUTOMA_COORD_ACTIONS = Dict{Symbol,Expr}(
+    # save the start position of a number
+    :mark => :(current_mark = p),
+
+    # convert the byte slice to Float64 and push!
+    :number => quote
+        #? println("Parsing: ", String(view(data_bytes, current_mark:p-1)))
+        push!(results_vector, Parsers.parse(Float64, view(data_bytes, current_mark:p-1), PARSE_OPTIONS))
+    end,
+)
+
+# ------------------------------------------------------------------
+# 3.  Generate the low‑level FSM driver exactly once
+#     and store it in the module’s global scope.
+# ------------------------------------------------------------------
+
+let ctx = CodeGenContext(vars = Variables(data = :data_bytes), generator = :goto)
+    eval(quote
+        function __core_automa_parser(data_bytes::AbstractVector{UInt8}, results_vector::Vector{Float64})
+            current_mark = 0
+
+            $(generate_init_code(ctx, COORDINATE_MACHINE))
+
+            p_end = sizeof(data_bytes)
+            p_eof = p_end
+
+            $(generate_exec_code(ctx, COORDINATE_MACHINE, AUTOMA_COORD_ACTIONS))
+
+            return cs          # final machine state
+        end
+    end)
+end
+
+# ------------------------------------------------------------------
+# 4.  High‑level convenience wrapper
+# ------------------------------------------------------------------
+
+"""
+    _parse_coordinates_automa(txt::AbstractString)
+
+Parse a KML/GeoRSS-style coordinate string and return a vector of
+`SVector{3,Float64}` (if the list length is divisible by 3) **or**
+`SVector{2,Float64}` (if divisible by 2).
+"""
+function _parse_coordinates_automa(txt::AbstractString)
+    parsed_floats = Float64[]
+    # sizehint! does not bring any speedup here
+    final_state = __core_automa_parser(codeunits(txt), parsed_floats)
+
+    # --- basic FSM state checks -------------------------------------------------
+    if final_state < 0
+        error("Coordinate string is malformed (FSM error state $final_state).")
+    elseif final_state > 0 && !(final_state == COORDINATE_MACHINE.start_state && isempty(txt))
+        error("Coordinate string is incomplete or has trailing garbage (FSM state $final_state).")
+    end
+
+    # --- assemble SVectors ------------------------------------------------------
+    len = length(parsed_floats)
+
+    if len % 3 == 0
+        n = len ÷ 3
+        result = Vector{SVector{3,Float64}}(undef, n)
+        @inbounds for i = 1:n
+            off = (i - 1) * 3
+            result[i] = SVector{3,Float64}(parsed_floats[off+1], parsed_floats[off+2], parsed_floats[off+3])
         end
         return result
-    elseif mod(len_parts, 2) == 0
-        n_coords = len_parts ÷ 2
-        result = Vector{SVector{2,Float64}}(undef, n_coords)
-        for i = 1:n_coords
-            offset = (i - 1) * 2
-
-            x = Parsers.parse(Float64, parts[offset+1])
-            y = Parsers.parse(Float64, parts[offset+2])
-
-            result[i] = SVector{2,Float64}(x, y)
+    elseif len % 2 == 0
+        n = len ÷ 2
+        result = Vector{SVector{2,Float64}}(undef, n)
+        @inbounds for i = 1:n
+            off = (i - 1) * 2
+            result[i] = SVector{2,Float64}(parsed_floats[off+1], parsed_floats[off+2])
         end
         return result
     else
-        # Consider making the error message more informative, e.g., include part of 'txt'
-        error("Coordinate list length $(len_parts) from string snippet '$(first(txt, 50))...' is not a multiple of 2 or 3")
+        snippet = first(txt, min(50, lastindex(txt)))
+        error("Parsed $len numbers from \"$snippet…\", which is not a multiple of 2 or 3.")
     end
 end
 
@@ -250,16 +310,38 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
         val = if ftype === String
             txt
         elseif ftype <: Integer
-            txt == "" ? zero(ftype) : parse(ftype, txt)
+            txt == "" ? zero(ftype) : Parsers.parse(ftype, txt)
         elseif ftype <: AbstractFloat
-            txt == "" ? zero(ftype) : parse(ftype, txt)
+            txt == "" ? zero(ftype) : Parsers.parse(ftype, txt)
         elseif ftype <: Bool
-            txt == "1" || lowercase(txt) == "true"
+            len = length(txt)
+            if len == 1
+                txt[1] == '1'
+                # KML spec often uses "true"/"false" as well as "1"/"0"
+            elseif len == 4 && # "true"
+                   (txt[1] == 't' || txt[1] == 'T') &&
+                   (txt[2] == 'r' || txt[2] == 'R') &&
+                   (txt[3] == 'u' || txt[3] == 'U') &&
+                   (txt[4] == 'e' || txt[4] == 'E')
+                true
+            elseif len == 5 && # "false"
+                   (txt[1] == 'f' || txt[1] == 'F') &&
+                   (txt[2] == 'a' || txt[2] == 'A') &&
+                   (txt[3] == 'l' || txt[3] == 'L') &&
+                   (txt[4] == 's' || txt[4] == 'S') &&
+                   (txt[5] == 'e' || txt[5] == 'E')
+                false
+            else
+                # Fallback for "0" or other KML-valid representations if necessary,
+                # or treat as false/error for non-standard.
+                # Assuming "0" should also be false if not "1" or "true":
+                false # Or: error("Invalid KML boolean string: '$txt'")
+            end
         elseif ftype <: Enums.AbstractKMLEnum
             ftype(txt)
             # (b) the special coordinate string
         elseif fname === :coordinates
-            vec = _parse_coordinates(txt)
+            vec = _parse_coordinates_automa(txt)
             val = (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
             # (c) fallback – let the generic helper take a stab
         else
@@ -294,17 +376,56 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
     else
         # legacy edge‑cases (<outerBoundaryIs>, <innerBoundaryIs>, …)
         if fname === :outerBoundaryIs
-            setfield!(parent, :outerBoundaryIs, object(XML.only(child)))
+            # Ensure parent is a Polygon and it expects a LinearRing here
+            if parent isa KML.Polygon && hasfield(typeof(parent), :outerBoundaryIs)
+                # XML.only(child) should get the <LinearRing> node
+                lr_node = XML.only(child)
+                if lr_node !== nothing
+                    setfield!(parent, :outerBoundaryIs, object(lr_node))
+                else
+                    @warn "<outerBoundaryIs> was empty for Polygon."
+                end
+            else
+                @warn "Encountered <outerBoundaryIs> for non-Polygon parent or parent without :outerBoundaryIs field: $(typeof(parent))"
+            end
         elseif fname === :innerBoundaryIs
-            setfield!(parent, :innerBoundaryIs, object.(XML.children(child)))
+            # Ensure parent is a Polygon
+            if parent isa KML.Polygon && hasfield(typeof(parent), :innerBoundaryIs)
+                # XML.only(child) should get the <LinearRing> node within the current <innerBoundaryIs>
+                lr_node = XML.only(child)
+                if lr_node !== nothing
+                    parsed_linear_ring_obj = object(lr_node) # This should be a KML.LinearRing
+                    if parsed_linear_ring_obj isa KML.LinearRing
+                        # Initialize the vector if it's the first innerBoundaryIs encountered for this Polygon
+                        if getfield(parent, :innerBoundaryIs) === nothing
+                            setfield!(parent, :innerBoundaryIs, KML.LinearRing[])
+                        end
+                        # Push the new KML.LinearRing to the vector
+                        push!(getfield(parent, :innerBoundaryIs), parsed_linear_ring_obj)
+                    else
+                        @warn "Parsed object inside <innerBoundaryIs> is not a KML.LinearRing, but $(typeof(parsed_linear_ring_obj)). Parent: $(typeof(parent))"
+                    end
+                else
+                    @warn "<innerBoundaryIs> was empty for Polygon."
+                end
+            else
+                @warn "Encountered <innerBoundaryIs> for non-Polygon parent or parent without :innerBoundaryIs field: $(typeof(parent))"
+            end
         else
             @warn "Unhandled tag $fname for $(typeof(parent))"
         end
     end
 end
 
-
-tagsym(x::String) = Symbol(replace(x, ':' => '_'))
+const _TAGSYM_CACHE = Dict{String,Symbol}()
+function tagsym(x::String)
+    # Use get! to look up the string in the cache.
+    # If not found, compute it (replace ':' and convert to Symbol),
+    # store it in the cache, and then return it.
+    get!(_TAGSYM_CACHE, x) do
+        Symbol(replace(x, ':' => '_'))
+    end
+end
 tagsym(x::Node) = tagsym(XML.tag(x))
 
 function add_attributes!(o::Union{Object,KMLElement}, source::Node)
@@ -330,11 +451,33 @@ function autosetfield!(o::Union{Object,KMLElement}, sym::Symbol, txt::String)
     elseif ftype <: AbstractFloat
         txt == "" ? zero(ftype) : parse(ftype, txt)
     elseif ftype <: Bool
-        txt == "1" || lowercase(txt) == "true"
+        len = length(txt)
+        if len == 1
+            txt[1] == '1'
+            # KML spec often uses "true"/"false" as well as "1"/"0"
+        elseif len == 4 && # "true"
+               (txt[1] == 't' || txt[1] == 'T') &&
+               (txt[2] == 'r' || txt[2] == 'R') &&
+               (txt[3] == 'u' || txt[3] == 'U') &&
+               (txt[4] == 'e' || txt[4] == 'E')
+            true
+        elseif len == 5 && # "false"
+               (txt[1] == 'f' || txt[1] == 'F') &&
+               (txt[2] == 'a' || txt[2] == 'A') &&
+               (txt[3] == 'l' || txt[3] == 'L') &&
+               (txt[4] == 's' || txt[4] == 'S') &&
+               (txt[5] == 'e' || txt[5] == 'E')
+            false
+        else
+            # Fallback for "0" or other KML-valid representations if necessary,
+            # or treat as false/error for non-standard.
+            # Assuming "0" should also be false if not "1" or "true":
+            false # Or: error("Invalid KML boolean string: '$txt'")
+        end
     elseif ftype <: Enums.AbstractKMLEnum
         ftype(txt)
     elseif fname === :coordinates
-        vec = _parse_coordinates(txt)
+        vec = _parse_coordinates_automa(txt)
         val = (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
     else
         txt   # last‑ditch: store the raw string
