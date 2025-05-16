@@ -205,7 +205,7 @@ const coord_delim_re = rep1(re"[\t\n\r ,]+")
 
 const _coord_number_actions = onexit!(onenter!(coord_number_re, :mark), :number)
 
-const _coord_machine_pattern = opt(_coord_number_actions * rep(coord_delim_re * _coord_number_actions)) * opt(coord_delim_re)
+const _coord_machine_pattern = opt(coord_delim_re) * opt(_coord_number_actions * rep(coord_delim_re * _coord_number_actions)) * opt(coord_delim_re)
 
 const COORDINATE_MACHINE = compile(_coord_machine_pattern)
 
@@ -265,14 +265,19 @@ function _parse_coordinates_automa(txt::AbstractString)
     # --- basic FSM state checks -------------------------------------------------
     if final_state < 0
         error("Coordinate string is malformed (FSM error state $final_state).")
-    elseif final_state > 0 && !(final_state == COORDINATE_MACHINE.start_state && isempty(txt))
-        error("Coordinate string is incomplete or has trailing garbage (FSM state $final_state).")
     end
+    #? Check below if the FSM ended in a valid state dropping garbage at the end the string
+    #? This check is overly strict and is not done for now (May 2025)
+    # if final_state > 0 && !(final_state == COORDINATE_MACHINE.start_state && isempty(txt))
+    #     error("Coordinate string is incomplete or has trailing garbage (FSM state $final_state).")
+    # end
 
     # --- assemble SVectors ------------------------------------------------------
     len = length(parsed_floats)
 
-    if len % 3 == 0
+    if len == 0
+        return SVector{0,Float64}[]
+    elseif len % 3 == 0
         n = len ÷ 3
         result = Vector{SVector{3,Float64}}(undef, n)
         @inbounds for i = 1:n
