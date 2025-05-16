@@ -100,7 +100,7 @@ function object(node::XML.Node)
     # ──  1. tags that map straight to KML types  ─────────────────────────────
     if haskey(TAG_TO_TYPE, sym)
         T = TAG_TO_TYPE[sym]
-        o = T()                               # no reflection
+        o = T()                             # no reflection
         add_attributes!(o, node)
         for child in XML.children(node)
             add_element!(o, child)
@@ -113,7 +113,7 @@ function object(node::XML.Node)
     end
     # ──  3. <name>, <description>, … fast scalar leafs  ──────────────────────
     if XML.is_simple(node)
-        return String(XML.value(only(node)))   # plain text
+        return XML.value(only(node))        # plain text
     end
     # ──  4. fallback to the generic code with logging  ───────────────────────
     return _object_slow(node)
@@ -308,7 +308,7 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
     if simple
         hasfield(typeof(parent), fname) || return       # ignore strangers
 
-        txt = String(XML.value(XML.only(child)))        # raw text
+        txt = XML.value(XML.only(child))                # raw text
         ftype = typemap(typeof(parent))[fname]          # cached Dict
 
         # (a) the easy built‑ins
