@@ -8,6 +8,8 @@ import XML: parse, Node
 using Base.Iterators: flatten
 # For HTML descriptions' conversion to plain text
 using Gumbo, AbstractTrees
+import REPL
+using REPL.TerminalMenus
 
 include("HtmlEntitiesAutoma.jl")
 using .HtmlEntitiesAutoma: decode_named_entities
