@@ -205,7 +205,8 @@ const coord_delim_re = rep1(re"[\t\n\r ,]+")
 
 const _coord_number_actions = onexit!(onenter!(coord_number_re, :mark), :number)
 
-const _coord_machine_pattern = opt(coord_delim_re) * opt(_coord_number_actions * rep(coord_delim_re * _coord_number_actions)) * opt(coord_delim_re)
+const _coord_machine_pattern =
+    opt(coord_delim_re) * opt(_coord_number_actions * rep(coord_delim_re * _coord_number_actions)) * opt(coord_delim_re)
 
 const COORDINATE_MACHINE = compile(_coord_machine_pattern)
 
@@ -301,7 +302,7 @@ end
 
 function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
     # ── 0. pre‑compute a few things ───────────────────────────────
-    fname = Symbol(replace(child.tag, ":" => "_"))      # tag → field name
+    fname = tagsym(child.tag)                     # tag → field name
     simple = XML.is_simple(child)
 
     # ── 1. *Scalar* leaf node (fast path) ─────────────────────────
@@ -311,7 +312,10 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
         txt = XML.value(XML.only(child))                # raw text
         ftype = typemap(typeof(parent))[fname]          # cached Dict
 
+        # ─────────────────────────────────────────────────────────────
         # (a) the easy built‑ins
+        # ─────────────────────────────────────────────────────────────
+        
         val = if ftype === String
             txt
         elseif ftype <: Integer
@@ -344,11 +348,79 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
             end
         elseif ftype <: Enums.AbstractKMLEnum
             ftype(txt)
-            # (b) the special coordinate string
+
+        # ─────────────────────────────────────────────────────────────────────
+        # (b) Special handling for the “coordinates” field name:
+        #     - the raw tag contains a whitespace-delimited list of 2D or 3D points (lon,lat[,alt])
+        #     - use the Automata‐based parser (_parse_coordinates_automa) for robust, high-performance parsing
+        #     - convert the parsed Float64 values into:
+        #         • a Vector{SVector{3,Float64}} or Vector{SVector{2,Float64}} when the field expects a sequence
+        #         • a single SVector{3,Float64} or SVector{2,Float64} when the field expects one coordinate
+        # ─────────────────────────────────────────────────────────────────────
+
         elseif fname === :coordinates
-            vec = _parse_coordinates_automa(txt)
-            val = (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
-            # (c) fallback – let the generic helper take a stab
+            parsed_coords_vec = _parse_coordinates_automa(txt)
+
+            if isempty(parsed_coords_vec)
+                if ftype <: AbstractVector
+                    val = ftype()
+                elseif ftype <: Union{Coord2,Coord3} # For Point.coordinates
+                    # This is an error as Point requires coordinates.
+                    error(
+                        "Field '$fname' in $(typeof(parent)) (e.g., KML.Point) expects a single coordinate, but input '$txt' yielded no valid coordinates.",
+                    )
+                elseif Nothing <: ftype # If the field type allows Nothing
+                    val = nothing
+                else
+                    error(
+                        "Empty coordinate data for field '$fname' of type $ftype in $(typeof(parent)). Input: '$(first(txt,50))'",
+                    )
+                end
+            elseif ftype <: AbstractVector # e.g. LineString.coordinates
+                val = convert(ftype, parsed_coords_vec)
+            elseif ftype <: Union{Coord2,Coord3} # Expects a single coordinate
+                if length(parsed_coords_vec) == 1
+                    val = convert(ftype, parsed_coords_vec[1])
+                else
+                    error(
+                        "Coordinate string '$txt' for field '$fname' in $(typeof(parent)) (type $ftype) resulted in $(length(parsed_coords_vec)) coordinates. Expected one.",
+                    )
+                end
+            else
+                error("Unexpected field type $ftype for coordinate data from '$txt' in $(typeof(parent)).")
+            end
+
+        # ─────────────────────────────────────────────────────────────────────
+        # (c) Special handling for the Google Earth extension field `gx_coord` (from <gx:coord>):
+        #     - parse the raw coordinate text using the Automata-based parser
+        #     - if no coordinates are found, assign `nothing` when allowed or create an empty container
+        #     - otherwise, convert the parsed vectors of Float64 into the declared `ftype` (e.g. Vector{SVector{2,Float64}})
+        # ─────────────────────────────────────────────────────────────────────
+
+        elseif fname === :gx_coord
+            parsed_vec = _parse_coordinates_automa(txt)
+            if isempty(parsed_vec)
+                # Decide: error, or assign empty Vector of a default SVector type, or Nothing if allowed
+                if Nothing <: ftype
+                    val = nothing
+                else
+                    # gx_Track might allow empty gx_coord conceptually.
+                    # Choose a default empty vector type, e.g. Vector{Coord2}()
+                    # This needs care if _parse_coordinates_automa doesn't give enough info for Coord2 vs Coord3 when empty
+                    # For now, let's assume _parse_coordinates_automa returns Vector{SVector{0,Float64}}[] or similar
+                    # which convert would handle.
+                    val = ftype() # Tries to create an empty instance of the Vector{CoordN} part
+                end
+            else
+                val = convert(ftype, parsed_vec) # convert will pick the right Vector{CoordN} from Union
+            end
+
+        # ─────────────────────────────────────────────────────────────────────
+        # (d) Fallback – delegate to the generic helper for any remaining field
+        #     • No specialized parsing matched; let `autosetfield!` apply the raw text
+        #     • This covers edge‐cases or unexpected tags uniformly
+        # ─────────────────────────────────────────────────────────────────────
+        
         else
             autosetfield!(parent, fname, txt)
             return

@@ -558,7 +558,7 @@ Base.@kwdef mutable struct gx_Track <: Geometry
     @object
     @altitude_mode_elements
     @option when ::String
-    @option gx_coord ::String
+    @option gx_coord ::Union{Vector{Coord2}, Vector{Coord3}}
     @option gx_angles ::String
     @option Model ::Model
     @option ExtendedData::ExtendedData
