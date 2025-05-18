@@ -26,9 +26,39 @@ function Base.read(io::IO, ::Type{KMLFile})
     _parse_kmlfile(doc)
 end
 
+abstract type KMxFileType end
+struct KML_KMxFileType <: KMxFileType end
+struct KMZ_KMxFileType <: KMxFileType end
+
 # Read from a filename
+function _read_file_from_path(::KML_KMxFileType, path::AbstractString) # No type argument needed if always KMLFile
+    return xmlread(path, Node) |> _parse_kmlfile
+end
+
+function _read_kmz_file_from_path_error_hinter(io, exc, argtypes, kwargs)
+    if isnothing(Base.get_extension(KML, :KMLZipArchivesExt)) && exc.f == _read_file_from_path && first(argtypes) == KMZ_KMxFileType
+        printstyled("\nKMZ reading via extension failed for '$(exc.args[2])'.\n"; color=:yellow, bold=true)
+        printstyled("  - Ensure the KMLZipArchivesExt module is loaded and available.\n"; color=:yellow)
+        printstyled("  - To enable KMZ support, you might need to install and load the ZipArchives package:\n"; color=:yellow)
+        println("    In the Julia REPL: ")
+        printstyled("      1. "; color=:cyan)
+        println("`using Pkg`")
+        printstyled("      2. "; color=:cyan)
+        println("`Pkg.add(\"ZipArchives\")` (if not already installed)")
+        printstyled("      3. "; color=:cyan)
+        println("`using ZipArchives` (before `using KML` or ensure it's in your project environment)")
+        printstyled("  - If you don't need KMZ support, this warning can be ignored or the extension potentially removed.\n"; color=:yellow)
+    end
+end
+
 function Base.read(path::AbstractString, ::Type{KMLFile})
-    xmlread(path, Node) |> _parse_kmlfile
+    if lowercase(splitext(path)[2]) == ".kmz"
+        return _read_file_from_path(KMZ_KMxFileType(), path)
+    elseif lowercase(splitext(path)[2]) == ".kml"
+        return _read_file_from_path(KML_KMxFileType(), path)
+    else
+        error("Unsupported file extension: $(splitext(path)[2]). Only .kml and .kmz files are supported.")
+    end
 end
 
 # Parse from an in-memory string
@@ -315,7 +345,7 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
         # ─────────────────────────────────────────────────────────────
         # (a) the easy built‑ins
         # ─────────────────────────────────────────────────────────────
-        
+
         val = if ftype === String
             txt
         elseif ftype <: Integer
@@ -349,14 +379,14 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
         elseif ftype <: Enums.AbstractKMLEnum
             ftype(txt)
 
-        # ─────────────────────────────────────────────────────────────────────
-        # (b) Special handling for the “coordinates” field name:
-        #     - the raw tag contains a whitespace-delimited list of 2D or 3D points (lon,lat[,alt])
-        #     - use the Automata‐based parser (_parse_coordinates_automa) for robust, high-performance parsing
-        #     - convert the parsed Float64 values into:
-        #         • a Vector{SVector{3,Float64}} or Vector{SVector{2,Float64}} when the field expects a sequence
-        #         • a single SVector{3,Float64} or SVector{2,Float64} when the field expects one coordinate
-        # ─────────────────────────────────────────────────────────────────────
+            # ─────────────────────────────────────────────────────────────────────
+            # (b) Special handling for the “coordinates” field name:
+            #     - the raw tag contains a whitespace-delimited list of 2D or 3D points (lon,lat[,alt])
+            #     - use the Automata‐based parser (_parse_coordinates_automa) for robust, high-performance parsing
+            #     - convert the parsed Float64 values into:
+            #         • a Vector{SVector{3,Float64}} or Vector{SVector{2,Float64}} when the field expects a sequence
+            #         • a single SVector{3,Float64} or SVector{2,Float64} when the field expects one coordinate
+            # ─────────────────────────────────────────────────────────────────────
 
         elseif fname === :coordinates
             parsed_coords_vec = _parse_coordinates_automa(txt)
@@ -390,12 +420,12 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
                 error("Unexpected field type $ftype for coordinate data from '$txt' in $(typeof(parent)).")
             end
 
-        # ─────────────────────────────────────────────────────────────────────
-        # (c) Special handling for the Google Earth extension field `gx_coord` (from <gx:coord>):
-        #     - parse the raw coordinate text using the Automata-based parser
-        #     - if no coordinates are found, assign `nothing` when allowed or create an empty container
-        #     - otherwise, convert the parsed vectors of Float64 into the declared `ftype` (e.g. Vector{SVector{2,Float64}})
-        # ─────────────────────────────────────────────────────────────────────
+            # ─────────────────────────────────────────────────────────────────────
+            # (c) Special handling for the Google Earth extension field `gx_coord` (from <gx:coord>):
+            #     - parse the raw coordinate text using the Automata-based parser
+            #     - if no coordinates are found, assign `nothing` when allowed or create an empty container
+            #     - otherwise, convert the parsed vectors of Float64 into the declared `ftype` (e.g. Vector{SVector{2,Float64}})
+            # ─────────────────────────────────────────────────────────────────────
 
         elseif fname === :gx_coord
             parsed_vec = _parse_coordinates_automa(txt)
@@ -415,12 +445,12 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
                 val = convert(ftype, parsed_vec) # convert will pick the right Vector{CoordN} from Union
             end
 
-        # ─────────────────────────────────────────────────────────────────────
-        # (d) Fallback – delegate to the generic helper for any remaining field
-        #     • No specialized parsing matched; let `autosetfield!` apply the raw text
-        #     • This covers edge‐cases or unexpected tags uniformly
-        # ─────────────────────────────────────────────────────────────────────
-        
+            # ─────────────────────────────────────────────────────────────────────
+            # (d) Fallback – delegate to the generic helper for any remaining field
+            #     • No specialized parsing matched; let `autosetfield!` apply the raw text
+            #     • This covers edge‐cases or unexpected tags uniformly
+            # ─────────────────────────────────────────────────────────────────────
+
         else
             autosetfield!(parent, fname, txt)
             return

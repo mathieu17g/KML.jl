@@ -11,13 +11,12 @@ using Automa, Parsers
 include("types.jl")             # all KML data types & helpers (no GeoInterface)
 include("geointerface.jl")      # GeoInterface extensions & pretty printing
 include("parsing.jl")           # XML → struct & struct → XML
-# include("TablesInterface.jl")   # Tables.jl wrapper for Placemarks
 include("tables.jl")            # Tables.jl wrapper for Placemarks
 using .TablesBridge             # re‑export ?
 
 # ─── re‑export public names ──────────────────────────────────────────────────
-export KMLFile, Enums, object  # the “root” objects most users need
-export PlacemarkTable
+export KMLFile, Enums, object   # the “root” objects most users need
+export PlacemarkTable, list_layers
 
 for T in vcat(
     all_concrete_subtypes(KMLElement),        # concrete types
@@ -25,6 +24,11 @@ for T in vcat(
 )
     T === KML.Pair && continue                # skip internal helper
     @eval export $(Symbol(replace(string(T), "KML." => "")))
+end
+
+function __init__()
+    # Handle all available errors!
+    Base.Experimental.register_error_hint(_read_kmz_file_from_path_error_hinter, MethodError)
 end
 
 end # module
