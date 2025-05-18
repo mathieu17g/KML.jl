@@ -26,9 +26,9 @@ function Base.read(io::IO, ::Type{KMLFile})
     _parse_kmlfile(doc)
 end
 
-abstract type KMxFileType end
-struct KML_KMxFileType <: KMxFileType end
-struct KMZ_KMxFileType <: KMxFileType end
+abstract type KMxFileType end # Abstract type for KML/KMZ dispatch
+struct KML_KMxFileType <: KMxFileType end # Marker for .kml files
+struct KMZ_KMxFileType <: KMxFileType end # Marker for .kmz files
 
 # Read from a filename
 function _read_file_from_path(::KML_KMxFileType, path::AbstractString) # No type argument needed if always KMLFile
@@ -36,28 +36,37 @@ function _read_file_from_path(::KML_KMxFileType, path::AbstractString) # No type
 end
 
 function _read_kmz_file_from_path_error_hinter(io, exc, argtypes, kwargs)
-    if isnothing(Base.get_extension(KML, :KMLZipArchivesExt)) && exc.f == _read_file_from_path && first(argtypes) == KMZ_KMxFileType
-        printstyled("\nKMZ reading via extension failed for '$(exc.args[2])'.\n"; color=:yellow, bold=true)
-        printstyled("  - Ensure the KMLZipArchivesExt module is loaded and available.\n"; color=:yellow)
-        printstyled("  - To enable KMZ support, you might need to install and load the ZipArchives package:\n"; color=:yellow)
+    if isnothing(Base.get_extension(KML, :KMLZipArchivesExt)) &&
+       exc.f == _read_file_from_path &&
+       first(argtypes) == KMZ_KMxFileType
+        printstyled("\nKMZ reading via extension failed for '$(exc.args[2])'.\n"; color = :yellow, bold = true)
+        printstyled("  - Ensure the KMLZipArchivesExt module is loaded and available.\n"; color = :yellow)
+        printstyled(
+            "  - To enable KMZ support, you might need to install and load the ZipArchives package:\n";
+            color = :yellow,
+        )
         println("    In the Julia REPL: ")
-        printstyled("      1. "; color=:cyan)
+        printstyled("      1. "; color = :cyan)
         println("`using Pkg`")
-        printstyled("      2. "; color=:cyan)
+        printstyled("      2. "; color = :cyan)
         println("`Pkg.add(\"ZipArchives\")` (if not already installed)")
-        printstyled("      3. "; color=:cyan)
+        printstyled("      3. "; color = :cyan)
         println("`using ZipArchives` (before `using KML` or ensure it's in your project environment)")
-        printstyled("  - If you don't need KMZ support, this warning can be ignored or the extension potentially removed.\n"; color=:yellow)
+        printstyled(
+            "  - If you don't need KMZ support, this warning can be ignored or the extension potentially removed.\n";
+            color = :yellow,
+        )
     end
 end
 
 function Base.read(path::AbstractString, ::Type{KMLFile})
-    if lowercase(splitext(path)[2]) == ".kmz"
-        return _read_file_from_path(KMZ_KMxFileType(), path)
-    elseif lowercase(splitext(path)[2]) == ".kml"
-        return _read_file_from_path(KML_KMxFileType(), path)
+    file_ext = lowercase(splitext(path)[2])
+    if file_ext == ".kmz"
+        return _read_file_from_path(KMZ_KMxFileType(), path) # Dispatch for KMZ
+    elseif file_ext == ".kml"
+        return _read_file_from_path(KML_KMxFileType(), path) # Dispatch for KML
     else
-        error("Unsupported file extension: $(splitext(path)[2]). Only .kml and .kmz files are supported.")
+        error("Unsupported file extension: $file_ext. Only .kml and .kmz are supported.")
     end
 end
 

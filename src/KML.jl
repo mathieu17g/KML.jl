@@ -16,7 +16,7 @@ using .TablesBridge             # re‑export ?
 
 # ─── re‑export public names ──────────────────────────────────────────────────
 export KMLFile, Enums, object   # the “root” objects most users need
-export PlacemarkTable, list_layers
+export PlacemarkTable, list_layers, get_layer_names, get_num_layers
 
 for T in vcat(
     all_concrete_subtypes(KMLElement),        # concrete types

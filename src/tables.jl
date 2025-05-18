@@ -78,9 +78,9 @@ function _get_layer_info(file::KMLFile)
             end
         end
 
-    #───────────────────────────────────────────────────────────────────#
-    # Scenario 2: Multiple Top-Level Features or Direct Placemarks      #
-    #───────────────────────────────────────────────────────────────────#
+        #───────────────────────────────────────────────────────────────────#
+        # Scenario 2: Multiple Top-Level Features or Direct Placemarks      #
+        #───────────────────────────────────────────────────────────────────#
 
     else
         # Top-level containers (Documents/Folders)
@@ -131,7 +131,23 @@ function _select_layer(file::KMLFile, layer_spec::Union{Nothing,String,Integer})
         if 1 <= layer_spec <= length(layer_options)
             return layer_options[layer_spec][3] # Return the source_object_or_vector
         else
-            error("Layer index $layer_spec out of bounds. Available layers: $(length(layer_options)).")
+            # Construct the detailed layer list string
+            layer_details_parts = String[]
+            # layer_options is already available and is the result of _get_layer_info(file)
+            for (idx, name, origin) in layer_options
+                item_count_str = ""
+                if origin isa Vector{Placemark}
+                    item_count_str = " ($(length(origin)) placemarks)"
+                elseif origin isa Document || origin isa Folder
+                    num_direct_children = origin.Features !== nothing ? length(origin.Features) : 0
+                    item_count_str = " (Container with $num_direct_children direct items)"
+                end
+                push!(layer_details_parts, "  [$idx] $name$item_count_str")
+            end
+            layer_details_str = join(layer_details_parts, "\n")
+            error(
+                "Layer index $layer_spec out of bounds. Must be between 1 and $(length(layer_options)).\nAvailable layers:\n$layer_details_str",
+            )
         end
     elseif layer_spec === nothing # Interactive or default selection
         if length(layer_options) == 1
@@ -160,18 +176,21 @@ end
 Prints a list of available "layers" found within a KML file to the console.
 
 Layers are identified based on common KML structuring patterns, such as:
-- Direct `Placemark`s within a `Document` or `Folder`.
-- `Folder`s or `Document`s themselves, which can act as containers for `Placemark`s or other features.
+
+  - Direct `Placemark`s within a `Document` or `Folder`.
+  - `Folder`s or `Document`s themselves, which can act as containers for `Placemark`s or other features.
 
 For each identified layer, the function displays:
-- An index number (for easy reference, e.g., when using `get_placemarks_from_layer`).
-- The name of the layer (e.g., `Document` name, `Folder` name, or a generic name if not specified).
-- A count of items within that layer (e.g., number of `Placemark`s or direct children in a container).
+
+  - An index number (for easy reference, e.g., when using `get_placemarks_from_layer`).
+  - The name of the layer (e.g., `Document` name, `Folder` name, or a generic name if not specified).
+  - A count of items within that layer (e.g., number of `Placemark`s or direct children in a container).
 
 If no distinct layers are found, or if the KML contains no `Placemark`s within common structural elements, a message indicating this is printed.
 
 # Arguments
-- `kml_input`: Either a string representing the path to a KML file or a `KMLFile` object that has already been read.
+
+  - `kml_input`: Either a string representing the path to a KML file or a `KMLFile` object that has already been read.
 """
 function list_layers(kml_input::Union{AbstractString,KMLFile})
     file = kml_input isa KMLFile ? kml_input : read(kml_input, KMLFile)
@@ -196,8 +215,64 @@ function list_layers(kml_input::Union{AbstractString,KMLFile})
     end
 end
 
+#─────────────────────────── get_layer_names function ───────────────────────────#
+"""
+    get_layer_names(kml_input::Union{AbstractString,KMLFile})::Vector{String}
+
+Returns an array of strings containing the names of available "layers"
+found within a KML file.
+
+Layers are identified based on common KML structuring patterns, such as:
+  - Direct `Placemark`s within a `Document` or `Folder`.
+  - `Folder`s or `Document`s themselves, which can act as containers for `Placemark`s or other features.
+
+If no distinct layers are found, or if the KML contains no `Placemark`s
+within common structural elements, an empty array is returned.
+
+# Arguments
+  - `kml_input`: Either a string representing the path to a KML file or a `KMLFile` object that has already been read.
+
+# Returns
+  - `Vector{String}`: An array of layer names.
+"""
+function get_layer_names(kml_input::Union{AbstractString,KMLFile})::Vector{String}
+    file = kml_input isa KMLFile ? kml_input : read(kml_input, KMLFile)
+    layer_infos = _get_layer_info(file)
+
+    if isempty(layer_infos)
+        return String[]
+    end
+
+    return [name for (_, name, _) in layer_infos]
+end
+
+#─────────────────────────── get_num_layers function ───────────────────────────#
+"""
+    get_num_layers(kml_input::Union{AbstractString,KMLFile})::Int
+
+Returns the number of available "layers" found within a KML file.
+
+Layers are identified based on common KML structuring patterns, such as:
+  - Direct `Placemark`s within a `Document` or `Folder`.
+  - `Folder`s or `Document`s themselves, which can act as containers for `Placemark`s or other features.
+
+If no distinct layers are found, or if the KML contains no `Placemark`s
+within common structural elements, 0 is returned.
+
+# Arguments
+  - `kml_input`: Either a string representing the path to a KML file or a `KMLFile` object that has already been read.
+
+# Returns
+  - `Int`: The number of layers.
+"""
+function get_num_layers(kml_input::Union{AbstractString,KMLFile})::Int
+    file = kml_input isa KMLFile ? kml_input : read(kml_input, KMLFile)
+    layer_infos = _get_layer_info(file)
+    return length(layer_infos)
+end
+
 #────────────────────────── streaming iterator over placemarks ──────────────────────────#
-function _placemark_iterator(file::KMLFile, layer_spec::Union{Nothing, String, Integer})
+function _placemark_iterator(file::KMLFile, layer_spec::Union{Nothing,String,Integer})
     selected_source = _select_layer(file, layer_spec)
     return _iter_feat(selected_source) # _iter_feat handles Document, Folder, or Vector{Placemark}
 end
