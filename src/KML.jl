@@ -9,6 +9,7 @@ using Automa, Parsers
 
 # ─── split implementation files ──────────────────────────────────────────────
 include("types.jl")             # all KML data types & helpers (no GeoInterface)
+include("utils.jl")             # utility functions (e.g., for parsing)
 include("geointerface.jl")      # GeoInterface extensions & pretty printing
 include("parsing.jl")           # XML → struct & struct → XML
 include("tables.jl")            # Tables.jl wrapper for Placemarks
@@ -16,6 +17,7 @@ using .TablesBridge             # re‑export ?
 
 # ─── re‑export public names ──────────────────────────────────────────────────
 export KMLFile, Enums, object   # the “root” objects most users need
+export unwrap_single_part_multigeometry # utility function
 export PlacemarkTable, list_layers, get_layer_names, get_num_layers
 
 for T in vcat(

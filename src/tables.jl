@@ -3,7 +3,7 @@ module TablesBridge
 export PlacemarkTable, list_layers
 
 using Tables
-import ..KML: KMLFile, read, Feature, Document, Folder, Placemark, Geometry, object
+import ..KML: KMLFile, read, Feature, Document, Folder, Placemark, Geometry, object, unwrap_single_part_multigeometry
 import XML: parse, Node
 using Base.Iterators: flatten
 import REPL
@@ -223,6 +223,7 @@ Returns an array of strings containing the names of available "layers"
 found within a KML file.
 
 Layers are identified based on common KML structuring patterns, such as:
+
   - Direct `Placemark`s within a `Document` or `Folder`.
   - `Folder`s or `Document`s themselves, which can act as containers for `Placemark`s or other features.
 
@@ -230,9 +231,11 @@ If no distinct layers are found, or if the KML contains no `Placemark`s
 within common structural elements, an empty array is returned.
 
 # Arguments
+
   - `kml_input`: Either a string representing the path to a KML file or a `KMLFile` object that has already been read.
 
 # Returns
+
   - `Vector{String}`: An array of layer names.
 """
 function get_layer_names(kml_input::Union{AbstractString,KMLFile})::Vector{String}
@@ -253,6 +256,7 @@ end
 Returns the number of available "layers" found within a KML file.
 
 Layers are identified based on common KML structuring patterns, such as:
+
   - Direct `Placemark`s within a `Document` or `Folder`.
   - `Folder`s or `Document`s themselves, which can act as containers for `Placemark`s or other features.
 
@@ -260,9 +264,11 @@ If no distinct layers are found, or if the KML contains no `Placemark`s
 within common structural elements, 0 is returned.
 
 # Arguments
+
   - `kml_input`: Either a string representing the path to a KML file or a `KMLFile` object that has already been read.
 
 # Returns
+
   - `Int`: The number of layers.
 """
 function get_num_layers(kml_input::Union{AbstractString,KMLFile})::Int
@@ -308,11 +314,14 @@ You can call it either with a path or with an already-loaded `KMLFile`.
 struct PlacemarkTable
     file::KMLFile
     layer::Union{Nothing,String,Integer} # layer can be a String or an Integer (index)
+    simplify_single_parts::Bool
 end
 
-PlacemarkTable(file::KMLFile; layer::Union{Nothing,String,Integer} = nothing) = PlacemarkTable(file, layer)
-PlacemarkTable(path::AbstractString; layer::Union{Nothing,String,Integer} = nothing) =
-    PlacemarkTable(read(path, KMLFile); layer = layer)
+PlacemarkTable(file::KMLFile; layer::Union{Nothing,String,Integer} = nothing, simplify_single_parts::Bool = false) =
+    PlacemarkTable(file, layer, simplify_single_parts)
+
+PlacemarkTable(path::AbstractString; layer::Union{Nothing,String,Integer} = nothing, simplify_single_parts::Bool = false) =
+    PlacemarkTable(read(path, KMLFile); layer = layer, simplify_single_parts = simplify_single_parts)
 
 #──────────────────────────────── Tables.jl API ──────────────────────────────────#
 Tables.istable(::Type{<:PlacemarkTable}) = true # Use <:PlacemarkTable for dispatch on instances
@@ -339,10 +348,14 @@ function Tables.rows(tbl::PlacemarkTable)
             else
                 name_str
             end
+            geom_to_return = pl.Geometry # Get the original geometry
+            if tbl.simplify_single_parts # Check the user's option
+                geom_to_return = unwrap_single_part_multigeometry(geom_to_return)
+            end
             (
                 name = processed_name, # Use the processed name
                 description = desc, # Use the processed or raw description
-                geometry = pl.Geometry,
+                geometry = geom_to_return,
             )
         end for pl in it if pl isa Placemark # Ensure we only process Placemarks
     )

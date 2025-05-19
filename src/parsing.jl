@@ -333,9 +333,10 @@ function _parse_coordinates_automa(txt::AbstractString)
             result[i] = SVector{2,Float64}(parsed_floats[off+1], parsed_floats[off+2])
         end
         return result
-    else
+    else # len is not 0 and not a multiple of 2 or 3
         snippet = first(txt, min(50, lastindex(txt)))
-        error("Parsed $len numbers from \"$snippet…\", which is not a multiple of 2 or 3.")
+        # @warn "Parsed $len numbers from \"$snippet…\", which is not a multiple of 2 or 3. Returning empty coordinates."
+        return SVector{0,Float64}[] # Return empty instead of erroring
     end
 end
 
@@ -401,11 +402,18 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
             parsed_coords_vec = _parse_coordinates_automa(txt)
             # This whole inner if/elseif/else determines the value for this branch
             if isempty(parsed_coords_vec)
-                if ftype <: AbstractVector # For LineString, LinearRing
-                    ftype() # Return empty vector
-                elseif ftype <: Union{Coord2,Coord3} # For Point
+                if ftype <: Union{Coord2,Coord3} # For Point
                     # Point.coordinates is @option, can be nothing if tag is empty or absent
+                    # TODO: Implement a KMLParsingWarningContext to track warnings across the file,
+                    # TODO: allowing for one detailed warning and a count of subsequent similar warnings
+                    # TODO: for specific cases like this. This would involve passing a context object
+                    # TODO: through the parsing functions.
+                    if !isempty(txt) # Only warn if the original tag had some (unparsable) content
+                        @warn "KML Parsing: Empty or unparsable coordinate string for Point field '$fname'. Assigning 'nothing'. Text: '$(first(txt,50))'." maxlog=1
+                    end
                     nothing
+                elseif ftype <: AbstractVector # For LineString, LinearRing
+                    ftype() # Return empty vector
                 elseif Nothing <: ftype # Should be covered by the above if type allows Nothing
                     nothing
                 else
