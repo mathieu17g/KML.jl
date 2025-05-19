@@ -365,14 +365,12 @@ end
 Tables.istable(::Type{KMLFile}) = true
 Tables.rowaccess(::Type{KMLFile}) = true
 
-# Pass the new option through
-function Tables.schema(k::KMLFile; layer::Union{Nothing,String,Integer} = nothing)
-    return Tables.schema(PlacemarkTable(k, layer = layer))
+function Tables.schema(k::KMLFile; layer::Union{Nothing,String,Integer} = nothing, simplify_single_parts::Bool = false)
+    return Tables.schema(PlacemarkTable(k; layer = layer, simplify_single_parts = simplify_single_parts))
 end
 
-# Pass the new option through
-function Tables.rows(k::KMLFile; layer::Union{Nothing,String,Integer} = nothing)
-    return Tables.rows(PlacemarkTable(k, layer = layer))
+function Tables.rows(k::KMLFile; layer::Union{Nothing,String,Integer} = nothing, simplify_single_parts::Bool = false)
+    return Tables.rows(PlacemarkTable(k; layer = layer, simplify_single_parts = simplify_single_parts))
 end
 
 end # module TablesBridge
