@@ -399,32 +399,30 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
 
         elseif fname === :coordinates
             parsed_coords_vec = _parse_coordinates_automa(txt)
-
+            # This whole inner if/elseif/else determines the value for this branch
             if isempty(parsed_coords_vec)
-                if ftype <: AbstractVector
-                    val = ftype()
-                elseif ftype <: Union{Coord2,Coord3} # For Point.coordinates
-                    # This is an error as Point requires coordinates.
-                    error(
-                        "Field '$fname' in $(typeof(parent)) (e.g., KML.Point) expects a single coordinate, but input '$txt' yielded no valid coordinates.",
-                    )
-                elseif Nothing <: ftype # If the field type allows Nothing
-                    val = nothing
+                if ftype <: AbstractVector # For LineString, LinearRing
+                    ftype() # Return empty vector
+                elseif ftype <: Union{Coord2,Coord3} # For Point
+                    # Point.coordinates is @option, can be nothing if tag is empty or absent
+                    nothing
+                elseif Nothing <: ftype # Should be covered by the above if type allows Nothing
+                    nothing
                 else
                     error(
                         "Empty coordinate data for field '$fname' of type $ftype in $(typeof(parent)). Input: '$(first(txt,50))'",
                     )
                 end
-            elseif ftype <: AbstractVector # e.g. LineString.coordinates
-                val = convert(ftype, parsed_coords_vec)
-            elseif ftype <: Union{Coord2,Coord3} # Expects a single coordinate
+            elseif ftype <: Union{Coord2,Coord3} # Check for Point's specific type FIRST
                 if length(parsed_coords_vec) == 1
-                    val = convert(ftype, parsed_coords_vec[1])
+                    convert(ftype, parsed_coords_vec[1]) # Returns a single SVector
                 else
                     error(
                         "Coordinate string '$txt' for field '$fname' in $(typeof(parent)) (type $ftype) resulted in $(length(parsed_coords_vec)) coordinates. Expected one.",
                     )
                 end
+            elseif ftype <: AbstractVector # THEN check for LineString/LinearRing's type
+                parsed_coords_vec # Returns a Vector{SVector}
             else
                 error("Unexpected field type $ftype for coordinate data from '$txt' in $(typeof(parent)).")
             end
