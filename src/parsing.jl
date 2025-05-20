@@ -131,31 +131,84 @@ const ENUM_NAMES_SET = Set(names(Enums; all = true))             # Get all names
 
 # Fast object()  – deal with the handful of tags we care about
 function object(node::XML.Node)
-    sym = tagsym(node)
-    # ──  0. tags that ARE NOT KML types themselves ───────────────────────────
+    sym = tagsym(node) # e.g. :atom_link, :atom_author, :Snippet, :Placemark
+
+    # ──  0. tags that ARE NOT KML types themselves (e.g., structural wrappers) ───
     if sym === :outerBoundaryIs || sym === :innerBoundaryIs
         return nothing
     end
-    # ──  1. tags that map straight to KML types  ─────────────────────────────
-    if haskey(TAG_TO_TYPE, sym)
-        T = TAG_TO_TYPE[sym]
-        o = T()                             # no reflection
+
+    #? ──  0.5. tags that are not KML types but are KML-like (e.g., :Pair) ───────────
+    if sym == :Pair
+        # Handle Pair as a special case, assuming it's a KML-like type
+        T = KML.Pair
+        o = T()
         add_attributes!(o, node)
-        for child in XML.children(node)
-            add_element!(o, child)
+        for child_xml_node in XML.children(node)
+            add_element!(o, child_xml_node)
         end
         return o
     end
+
+    # ──  1. tags that map straight to KML types  ─────────────────────────────
+    if haskey(TAG_TO_TYPE, sym) # This will now find :atom_author and :atom_link
+        T = TAG_TO_TYPE[sym]
+        o = T()
+        add_attributes!(o, node) # Parses href, rel etc. for AtomLink; any attributes for AtomAuthor
+
+        # Special handling for Snippet's direct text content (keep this from previous fix)
+        if T === KML.Snippet
+            if hasfield(T, :content) && fieldtype(T, :content) === String
+                node_children = XML.children(node)
+                text_parts = String[] # Initialize to avoid UndefVarError if no text nodes
+                has_other_elements = false
+                for child_node_val in node_children
+                    if XML.is_text(child_node_val)
+                        push!(text_parts, XML.value(child_node_val))
+                    elseif !XML.is_comment(child_node_val) && !XML.is_dtd(child_node_val)
+                        has_other_elements = true
+                    end
+                end
+                if !has_other_elements || isempty(node_children)
+                    setfield!(o, :content, String(strip(join(text_parts)))) # Ensure String
+                else
+                    # Fallback for Snippet if it has unexpected child elements that might be other defined fields
+                    for child_xml_node_fallback in XML.children(node)
+                        add_element!(o, child_xml_node_fallback)
+                    end
+                end
+            else # KML.Snippet does not have :content::String (shouldn't happen)
+                for child_xml_node in XML.children(node) # Generic processing for other fields
+                    add_element!(o, child_xml_node)
+                end
+            end
+        else
+            # Generic child element parsing for all other types (INCLUDING AtomAuthor and AtomLink)
+            # For AtomAuthor, this processes children like <name>, <uri>, <email>.
+            # For AtomLink, this loop should ideally be empty for standard atom:link.
+            for child_xml_node in XML.children(node)
+                add_element!(o, child_xml_node)
+            end
+        end
+        return o
+    end
+
     # ──  2. enums  ───────────────────────────────────────────────────────────
-    if sym in ENUM_NAMES_SET
+    if sym in ENUM_NAMES_SET # Assumes ENUM_NAMES_SET is defined
         return getproperty(Enums, sym)(XML.value(only(node)))
     end
-    # ──  3. <name>, <description>, … fast scalar leafs  ──────────────────────
+
+    # ──  3. <name>, <description>, … fast scalar leafs that are not children of other KMLElements
+    # This path is taken if the tag itself represents a simple value AND is not mapped in TAG_TO_TYPE.
+    # This might be less common if all textual leaf tags are children of complex types.
     if XML.is_simple(node)
-        return XML.value(only(node))        # plain text
+        # This could be for simple elements like <extrude>0</extrude> if they are directly processed by object()
+        # rather than always through add_element!
+        return XML.value(only(node))
     end
+
     # ──  4. fallback to the generic code with logging  ───────────────────────
-    return _object_slow(node)
+    return _object_slow(node) # This is where the "Unhandled Tag: 'atom:link'" warning came from
 end
 
 const KML_NAMES_SET = Set(names(KML; all = true, imported = true)) # Get all names in KML
@@ -212,21 +265,38 @@ function _object_slow(node::XML.Node)
     # This means object() will return 'nothing' for this tag.
     # This 'nothing' might be handled by special logic in `add_element!` (e.g., for unknown tags within a known parent),
     # or it might result in the tag being effectively ignored if no specific handling exists.
-    @warn begin
-        "Unhandled Tag: Tag `'$original_tag_name'` (symbol `:$sym`) was not recognized as a known KML type, " *
-        "Enum, or handled structural element by `_object_slow`. `object()` will return `nothing`.\n" *
-        "DEVELOPER ACTION: Evaluate this tag:\n" *
-        "  1. Is `'$original_tag_name'` a standard KML element that this parser should support?\n" *
-        "     - If YES: Define a corresponding Julia struct (e.g., `struct $(uppercasefirst(string(sym))) <: KMLElement ... end`), " *
-        "       and ensure it's added to `TAG_TO_TYPE` (usually automatic if it's a concrete subtype of `KMLElement`).\n" *
-        "  2. Is `'$original_tag_name'` a structural tag (like `<coordinates>`, `<outerBoundaryIs>`) that needs special " *
-        "     parsing logic within `add_element!` after `object()` returns `nothing`?\n" *
-        "     - If YES, and it's not already handled: The main `object()` function should ideally return `nothing` for it *before* " *
-        "       calling `_object_slow` (by adding an explicit check `if sym === :$sym return nothing end`). " *
-        "       Then, ensure `add_element!` has the required logic for `:$sym`.\n" *
-        "  3. Is this tag vendor-specific, deprecated, or intentionally unsupported?\n" *
-        "     - If YES: This warning might be acceptable, or you could add `:$sym` to a list of known-to-ignore tags " *
-        "       in the main `object()` function to suppress this warning for common, intentionally ignored tags."
+    @warn sprint() do io
+        # General information about the unhandled tag
+        println(io, "Unhandled Tag: `'$original_tag_name'` (symbol: `:$sym`).")
+        println(io, "This tag was not recognized by the `_object_slow` fallback parser as a known KML type,")
+        println(io, "Enum, or specific structural element. Consequently, `object()` will return `nothing` for this tag.")
+        println(io) # Blank line for separation
+
+        # Actionable advice for the developer
+        println(io, "DEVELOPER ACTION: Please evaluate `'$original_tag_name'`:")
+
+        # Option 1: Standard KML element
+        println(io, "  1. Is it a standard KML element that should be parsed?")
+        println(io, "     - If YES: Define a corresponding Julia struct, e.g.,")
+        println(io, "         `struct $(uppercasefirst(string(sym))) <: KMLElement ... end`")
+        println(io, "       and ensure it's mapped in `TAG_TO_TYPE` (this is often automatic for")
+        println(io, "       concrete subtypes of `KMLElement`).")
+        println(io) # Blank line
+
+        # Option 2: Structural tag needing special handling
+        println(io, "  2. Is it a structural tag (e.g., `<coordinates>`, `<outerBoundaryIs>`) requiring")
+        println(io, "     special logic in `add_element!` after `object()` returns `nothing` for it?")
+        println(io, "     - If YES, and not yet handled:")
+        println(io, "       a. Consider modifying `object()` to return `nothing` for `:$sym` *before* `_object_slow`.")
+        println(io, "          (e.g., `if sym === :$sym return nothing end`)")
+        println(io, "       b. Ensure `add_element!` contains the necessary parsing logic for `:$sym`.")
+        println(io) # Blank line
+
+        # Option 3: Vendor-specific, deprecated, or intentionally unsupported
+        println(io, "  3. Is this tag vendor-specific, deprecated, or intentionally unsupported?")
+        println(io, "     - If YES: This warning might be acceptable. To suppress it for known, intentionally")
+        println(io, "       ignored tags, consider modifying `object()` to return `nothing` silently for `:$sym`")
+        println(io, "       (e.g., by adding `:$sym` to an explicit ignore list before the `_object_slow` call).")
     end
     return nothing
 end
@@ -334,8 +404,11 @@ function _parse_coordinates_automa(txt::AbstractString)
         end
         return result
     else # len is not 0 and not a multiple of 2 or 3
-        snippet = first(txt, min(50, lastindex(txt)))
-        # @warn "Parsed $len numbers from \"$snippet…\", which is not a multiple of 2 or 3. Returning empty coordinates."
+        if !isempty(txt) && !all(isspace, txt)
+            snippet = first(txt, min(50, lastindex(txt)))
+            @warn "Parsed $len numbers from \"$snippet…\", which is not a multiple of 2 or 3. Returning empty coordinates." maxlog =
+                1
+        end
         return SVector{0,Float64}[] # Return empty instead of erroring
     end
 end
@@ -399,40 +472,27 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
             # ─────────────────────────────────────────────────────────────────────
 
         elseif fname === :coordinates
+            # TODO: Implement a KMLParsingWarningContext to track warnings across the file,
+            # TODO: allowing for one detailed warning and a count of subsequent similar warnings
+            # TODO: for specific cases like this. This would involve passing a context object
+            # TODO: through the parsing functions.
             parsed_coords_vec = _parse_coordinates_automa(txt)
             # This whole inner if/elseif/else determines the value for this branch
             if isempty(parsed_coords_vec)
-                if ftype <: Union{Coord2,Coord3} # For Point
-                    # Point.coordinates is @option, can be nothing if tag is empty or absent
-                    # TODO: Implement a KMLParsingWarningContext to track warnings across the file,
-                    # TODO: allowing for one detailed warning and a count of subsequent similar warnings
-                    # TODO: for specific cases like this. This would involve passing a context object
-                    # TODO: through the parsing functions.
-                    if !isempty(txt) # Only warn if the original tag had some (unparsable) content
-                        @warn "KML Parsing: Empty or unparsable coordinate string for Point field '$fname'. Assigning 'nothing'. Text: '$(first(txt,50))'." maxlog=1
-                    end
-                    nothing
-                elseif ftype <: AbstractVector # For LineString, LinearRing
-                    ftype() # Return empty vector
-                elseif Nothing <: ftype # Should be covered by the above if type allows Nothing
-                    nothing
-                else
-                    error(
-                        "Empty coordinate data for field '$fname' of type $ftype in $(typeof(parent)). Input: '$(first(txt,50))'",
-                    )
-                end
-            elseif ftype <: Union{Coord2,Coord3} # Check for Point's specific type FIRST
+                # For @option fields, the correct representation of "no valid coordinates" is `nothing`.
+                nothing
+            elseif ftype <: Union{Coord2,Coord3} # Point coordinates, non-empty
                 if length(parsed_coords_vec) == 1
-                    convert(ftype, parsed_coords_vec[1]) # Returns a single SVector
+                    convert(ftype, parsed_coords_vec[1])
                 else
                     error(
-                        "Coordinate string '$txt' for field '$fname' in $(typeof(parent)) (type $ftype) resulted in $(length(parsed_coords_vec)) coordinates. Expected one.",
+                        "KML Parsing: Coordinate string '$txt' for Point field '$fname' (type $ftype) resulted in $(length(parsed_coords_vec)) coordinates. Expected one.",
                     )
                 end
-            elseif ftype <: AbstractVector # THEN check for LineString/LinearRing's type
-                parsed_coords_vec # Returns a Vector{SVector}
+            elseif ftype <: AbstractVector # LineString, LinearRing, gx_Track coordinates, non-empty
+                parsed_coords_vec
             else
-                error("Unexpected field type $ftype for coordinate data from '$txt' in $(typeof(parent)).")
+                error("KML Parsing: Unexpected field type $ftype for coordinate data from '$txt' in $(typeof(parent)).")
             end
 
             # ─────────────────────────────────────────────────────────────────────
@@ -498,37 +558,43 @@ function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
     else
         # legacy edge‑cases (<outerBoundaryIs>, <innerBoundaryIs>, …)
         if fname === :outerBoundaryIs
-            # Ensure parent is a Polygon and it expects a LinearRing here
             if parent isa KML.Polygon && hasfield(typeof(parent), :outerBoundaryIs)
-                # XML.only(child) should get the <LinearRing> node
-                lr_node = XML.only(child)
-                if lr_node !== nothing
-                    setfield!(parent, :outerBoundaryIs, object(lr_node))
+                element_children = collect(XML.elements(child)) # Get only element children
+                if length(element_children) == 1
+                    lr_node = element_children[1]
+                    if XML.tag(lr_node) == "LinearRing" # Check if the single child is indeed LinearRing
+                        setfield!(parent, :outerBoundaryIs, object(lr_node))
+                    else
+                        @warn "<outerBoundaryIs> for Polygon contained a <$(XML.tag(lr_node))> element instead of the expected <LinearRing>."
+                        # Decide how to handle: set to nothing, error, or try to parse anyway if compatible
+                    end
                 else
-                    @warn "<outerBoundaryIs> was empty for Polygon."
+                    @warn "<outerBoundaryIs> for Polygon did not contain exactly one child element (e.g., <LinearRing>). Found $(length(element_children)) element children."
+                    # Log children tags for debugging: for el_child in element_children @info "Child: <$(XML.tag(el_child))>" end
                 end
             else
                 @warn "Encountered <outerBoundaryIs> for non-Polygon parent or parent without :outerBoundaryIs field: $(typeof(parent))"
             end
         elseif fname === :innerBoundaryIs
-            # Ensure parent is a Polygon
             if parent isa KML.Polygon && hasfield(typeof(parent), :innerBoundaryIs)
-                # XML.only(child) should get the <LinearRing> node within the current <innerBoundaryIs>
-                lr_node = XML.only(child)
-                if lr_node !== nothing
-                    parsed_linear_ring_obj = object(lr_node) # This should be a KML.LinearRing
-                    if parsed_linear_ring_obj isa KML.LinearRing
-                        # Initialize the vector if it's the first innerBoundaryIs encountered for this Polygon
-                        if getfield(parent, :innerBoundaryIs) === nothing
-                            setfield!(parent, :innerBoundaryIs, KML.LinearRing[])
+                element_children = collect(XML.elements(child)) # Get only element children
+                if length(element_children) == 1
+                    lr_node = element_children[1]
+                    if XML.tag(lr_node) == "LinearRing"
+                        parsed_linear_ring_obj = object(lr_node)
+                        if parsed_linear_ring_obj isa KML.LinearRing
+                            if getfield(parent, :innerBoundaryIs) === nothing
+                                setfield!(parent, :innerBoundaryIs, KML.LinearRing[])
+                            end
+                            push!(getfield(parent, :innerBoundaryIs), parsed_linear_ring_obj)
+                        else
+                            @warn "Parsed object inside <innerBoundaryIs> is not a KML.LinearRing, but $(typeof(parsed_linear_ring_obj)). Parent: $(typeof(parent))"
                         end
-                        # Push the new KML.LinearRing to the vector
-                        push!(getfield(parent, :innerBoundaryIs), parsed_linear_ring_obj)
                     else
-                        @warn "Parsed object inside <innerBoundaryIs> is not a KML.LinearRing, but $(typeof(parsed_linear_ring_obj)). Parent: $(typeof(parent))"
+                        @warn "<innerBoundaryIs> for Polygon contained a <$(XML.tag(lr_node))> element instead of the expected <LinearRing>."
                     end
                 else
-                    @warn "<innerBoundaryIs> was empty for Polygon."
+                    @warn "<innerBoundaryIs> for Polygon did not contain exactly one child element (e.g., <LinearRing>). Found $(length(element_children)) element children."
                 end
             else
                 @warn "Encountered <innerBoundaryIs> for non-Polygon parent or parent without :innerBoundaryIs field: $(typeof(parent))"

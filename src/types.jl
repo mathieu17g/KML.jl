@@ -578,6 +578,33 @@ Base.@kwdef mutable struct gx_Playlist <: Object
     gx_TourPrimitives::Vector{gx_TourPrimitive} = []
 end
 
+#──────────────────────────────  ATOM SUPPORT  ──────────────────────────────
+# These are the building blocks for ATOM syndication, used in KML for metadata.
+
+# For <atom:author>
+Base.@kwdef mutable struct AtomAuthor <: KMLElement{()} # No top-level attributes for <atom:author> itself
+    @option name::String     # Corresponds to <atom:name> child
+    @option uri::String      # Corresponds to <atom:uri> child
+    @option email::String    # Corresponds to <atom:email> child
+    # Add other atomPersonConstruct fields if needed
+end
+TAG_TO_TYPE[:atom_author] = AtomAuthor # Manual mapping for namespaced tag
+
+# For <atom:link>
+# Attributes of <atom:link> become fields with the @ KMLElement{attr_names} macro
+Base.@kwdef mutable struct AtomLink <: KMLElement{(:href, :rel, :type, :hreflang, :title, :length)}
+    @option href::String
+    @option rel::String
+    @option type::String
+    @option hreflang::String
+    @option title::String
+    @option length::Int # KML spec says 'length' attribute is xs:positiveInteger
+    # Note: <atom:link> is typically an empty element with attributes.
+    # If it could have text content you want to capture, add a 'content::String' field here.
+    # Standard Atom links usually don't have direct text content.
+end
+TAG_TO_TYPE[:atom_link] = AtomLink # Manual mapping for namespaced tag
+
 #────────────────────────────────  FEATURE LEVEL  ────────────────────────────
 # Features are the core elements that are drawn on the Earth.
 
@@ -586,8 +613,8 @@ end
     @option name ::String
     @option visibility ::Bool
     @option open ::Bool
-    @option atom_author ::String
-    @option atom_link ::String
+    @option atom_author ::AtomAuthor 
+    @option atom_link ::AtomLink 
     @option address ::String
     @option xal_AddressDetails::String
     @option phoneNumber ::String
@@ -725,6 +752,15 @@ function _collect_concrete!(root)
     end
 end
 _collect_concrete!(KMLElement)
+# Manually map aliases for hotSpot to improve performance
+TAG_TO_TYPE[:overlayXY] = KML.hotSpot
+TAG_TO_TYPE[:screenXY] = KML.hotSpot
+TAG_TO_TYPE[:rotationXY] = KML.hotSpot
+TAG_TO_TYPE[:size] = KML.hotSpot
+# MAnually handle <snippet> as if it were <Snippet>
+TAG_TO_TYPE[:snippet] = KML.Snippet
 # Manual mapping for <Pair> tag to KML.StyleMapPair
-# This ensures correct and efficient parsing of <Pair> elements within a <StyleMap>.
 TAG_TO_TYPE[:Pair] = KML.StyleMapPair
+# Manual mapping for <Url> tag to KML.Link. <Url> is a KML v2.1 element that is used to 
+# specify a URL for a link. It has been deprecated in favor of <Link> in KML v2.2.
+TAG_TO_TYPE[:Url] = KML.Link
