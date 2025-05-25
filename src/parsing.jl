@@ -609,6 +609,9 @@ function _convert_and_set_simple_field!(
     end
 end
 
+include("KMLTimeElementParsing.jl")
+using .KMLTimeElementParsing # Import the time parsing functions
+
 # -----------------------------------------------------------------------------
 # Helper Function: Parse and Append to a Vector of Simple Types
 # -----------------------------------------------------------------------------
@@ -637,37 +640,10 @@ function _parse_and_append_to_simple_vector!(
            el_type_original == Union{Dates.Date,String,TimeZones.ZonedDateTime} ||
            el_type_original == Union{String,Dates.Date,TimeZones.ZonedDateTime}
 
-        parsed_time_successfully_for_vector = false
-        try
-            parsed_element_val = TimeZones.ZonedDateTime(processed_string_val)
-            parsed_time_successfully_for_vector = true
-        catch e_zoned_vec
-            try
-                parsed_element_val = Dates.Date(processed_string_val)
-                parsed_time_successfully_for_vector = true
-            catch e_date_vec
-                try
-                    parsed_element_val = Dates.DateTime(processed_string_val) # KML dateTime can include time
-                    parsed_time_successfully_for_vector = true
-                catch e_datetime_vec
-                    if (length(processed_string_val) == 4 && occursin(r"^\d{4}$", processed_string_val)) ||
-                       (length(processed_string_val) == 7 && occursin(r"^\d{4}-\d{2}$", processed_string_val))
-                        parsed_element_val = processed_string_val # Store YYYY or YYYY-MM as String
-                        parsed_time_successfully_for_vector = true
-                        @info "Storing KML partial date '$processed_string_val' as String element for vector field $true_field_name."
-                    else
-                        @warn "Failed to parse '$processed_string_val' as ZonedDateTime, Date, or DateTime for vector element in field $true_field_name. Storing as raw string. Errors: ZDT: $e_zoned_vec, Date: $e_date_vec, DT: $e_datetime_vec"
-                        parsed_element_val = processed_string_val
-                        parsed_time_successfully_for_vector = true
-                    end
-                end
-            end
-        end
-        if !parsed_time_successfully_for_vector && !(Nothing <: el_type_original && isempty(processed_string_val))
-            @warn "Final fallback for time vector element field $true_field_name with value '$processed_string_val', storing as string."
-            parsed_element_val = processed_string_val
-        end
-        # Other simple types for vector elements
+        parsed_element_val = parse_iso8601(processed_string_val) # Ensure we parse the string to ZonedDateTime or Date
+    # If parsing failed, parsed_element_val will be the original string
+
+    # Other simple types for vector elements
     else
         if actual_el_type === String
             parsed_element_val = processed_string_val
@@ -742,36 +718,7 @@ function _parse_and_set_scalar_field!(
        non_nothing_ftype == Union{Dates.Date,String,TimeZones.ZonedDateTime} ||
        non_nothing_ftype == Union{String,Dates.Date,TimeZones.ZonedDateTime}
 
-        parsed_time_successfully = false
-        try
-            final_val_to_set = TimeZones.ZonedDateTime(processed_string_val)
-            parsed_time_successfully = true
-        catch e_zoned
-            try
-                final_val_to_set = Dates.Date(processed_string_val)
-                parsed_time_successfully = true
-            catch e_date
-                try
-                    final_val_to_set = Dates.DateTime(processed_string_val)
-                    parsed_time_successfully = true
-                catch e_datetime
-                    if (length(processed_string_val) == 4 && occursin(r"^\d{4}$", processed_string_val)) ||
-                       (length(processed_string_val) == 7 && occursin(r"^\d{4}-\d{2}$", processed_string_val))
-                        final_val_to_set = processed_string_val
-                        parsed_time_successfully = true
-                        @info "Storing KML partial date '$processed_string_val' as String for scalar field $true_field_name."
-                    else
-                        @warn "Failed to parse '$processed_string_val' as ZonedDateTime, Date, or DateTime for scalar field $true_field_name. Storing as raw string. Errors: ZDT: $e_zoned, Date: $e_date, DT: $e_datetime"
-                        final_val_to_set = processed_string_val
-                        parsed_time_successfully = true
-                    end
-                end
-            end
-        end
-        if !parsed_time_successfully && !(Nothing <: ftype_original && isempty(processed_string_val)) # Redundant check, already handled
-            @warn "Final fallback for time field $true_field_name with value '$processed_string_val', storing as string."
-            final_val_to_set = processed_string_val
-        end
+        final_val_to_set = parse_iso8601(processed_string_val)
     else # Other scalar types
         # `non_nothing_ftype` here is the actual_type_scalar from your previous version
         if non_nothing_ftype === String

@@ -1,3 +1,8 @@
+module KMLTimeElementParsing
+
+export parse_iso8601
+
+# ─── base deps ────────────────────────────────────────────────────────────────
 using Dates, TimeZones, Automa
 
 # Define regex patterns for ISO 8601 formats
@@ -44,56 +49,147 @@ const ordinal_extended = year * re"-" * ordinal
 const ordinal_basic = year * ordinal
 
 # Generate validator functions for each format
-@eval $(Automa.generate_buffer_validator(:is_datetime_tz_extended, datetime_tz_extended))
-@eval $(Automa.generate_buffer_validator(:is_datetime_tz_basic, datetime_tz_basic))
-@eval $(Automa.generate_buffer_validator(:is_datetime_extended, datetime_extended))
-@eval $(Automa.generate_buffer_validator(:is_datetime_basic, datetime_basic))
-@eval $(Automa.generate_buffer_validator(:is_date_extended, date_extended))
-@eval $(Automa.generate_buffer_validator(:is_date_basic, date_basic))
-@eval $(Automa.generate_buffer_validator(:is_week_extended, week_extended))
-@eval $(Automa.generate_buffer_validator(:is_week_basic, week_basic))
-@eval $(Automa.generate_buffer_validator(:is_ordinal_extended, ordinal_extended))
-@eval $(Automa.generate_buffer_validator(:is_ordinal_basic, ordinal_basic))
+@eval $(Automa.generate_buffer_validator(:is_datetime_tz_extended, datetime_tz_extended; goto=true))
+@eval $(Automa.generate_buffer_validator(:is_datetime_tz_basic, datetime_tz_basic; goto=true))
+@eval $(Automa.generate_buffer_validator(:is_datetime_extended, datetime_extended; goto=true))
+@eval $(Automa.generate_buffer_validator(:is_datetime_basic, datetime_basic; goto=true))
+@eval $(Automa.generate_buffer_validator(:is_date_extended, date_extended; goto=true))
+@eval $(Automa.generate_buffer_validator(:is_date_basic, date_basic; goto=true))
+@eval $(Automa.generate_buffer_validator(:is_week_extended, week_extended; goto=true))
+@eval $(Automa.generate_buffer_validator(:is_week_basic, week_basic; goto=true))
+@eval $(Automa.generate_buffer_validator(:is_ordinal_extended, ordinal_extended; goto=true))
+@eval $(Automa.generate_buffer_validator(:is_ordinal_basic, ordinal_basic; goto=true))
+
+# Performance optimization: Pre-check string length to avoid unnecessary validation
+@inline function quick_format_check(s::AbstractString)
+    len = length(s)
+    if len < 8
+        return :invalid
+    elseif len == 8
+        return :date_basic  # yyyymmdd
+    elseif len == 10
+        return :date_extended  # yyyy-mm-dd
+    elseif len == 15
+        return :datetime_basic  # yyyymmddTHHMMSS
+    elseif len >= 19
+        # Could be various datetime formats
+        return :datetime_any
+    else
+        return :other
+    end
+end
+
+# Cache for fixed timezone offsets to avoid recreating them
+const TZ_CACHE = Dict{String, TimeZone}()
+const TZ_CACHE_LOCK = ReentrantLock()
+
+function get_cached_timezone(tz_str::AbstractString)
+    # Fast path for common cases
+    tz_str == "Z" && return tz"UTC"
+    
+    # Check cache first
+    lock(TZ_CACHE_LOCK) do
+        get!(TZ_CACHE, tz_str) do
+            if startswith(tz_str, "+") || startswith(tz_str, "-")
+                # Parse offset
+                sign = tz_str[1] == '+' ? 1 : -1
+                offset_str = tz_str[2:end]
+                if contains(offset_str, ":")
+                    hours, minutes = parse.(Int, split(offset_str, ":"))
+                else
+                    hours = parse(Int, offset_str[1:2])
+                    minutes = parse(Int, offset_str[3:4])
+                end
+                offset_seconds = sign * (hours * 3600 + minutes * 60)
+                FixedTimeZone("UTC" * tz_str, offset_seconds)
+            else
+                # Named timezone
+                TimeZone(tz_str)
+            end
+        end
+    end
+end
+
+# Optimized parsing functions using manual extraction for common cases
+@inline function parse_date_extended_fast(s::AbstractString)
+    # For "yyyy-mm-dd" format
+    year = parse(Int, @view s[1:4])
+    month = parse(Int, @view s[6:7])
+    day = parse(Int, @view s[9:10])
+    Date(year, month, day)
+end
+
+@inline function parse_date_basic_fast(s::AbstractString)
+    # For "yyyymmdd" format
+    year = parse(Int, @view s[1:4])
+    month = parse(Int, @view s[5:6])
+    day = parse(Int, @view s[7:8])
+    Date(year, month, day)
+end
 
 """
-    parse_iso8601(s::AbstractString) -> Union{ZonedDateTime, DateTime, Date, String}
+    parse_iso8601(s::AbstractString; warn::Bool=true) -> Union{ZonedDateTime, DateTime, Date, String}
 
 Parse an ISO 8601 formatted string into the appropriate Julia type.
 Returns the original string if the format is not recognized.
+
+# Arguments
+- `warn::Bool=true`: Whether to emit warnings when parsing fails
 """
-function parse_iso8601(s::AbstractString)
-    # Check formats in order of frequency
-    format = if is_datetime_tz_extended(s) === nothing
-        :datetime_tz_extended
-    elseif is_datetime_tz_basic(s) === nothing
-        :datetime_tz_basic
-    elseif is_datetime_extended(s) === nothing
-        :datetime_extended
-    elseif is_datetime_basic(s) === nothing
-        :datetime_basic
-    elseif is_date_extended(s) === nothing
-        :date_extended
-    elseif is_date_basic(s) === nothing
-        :date_basic
-    elseif is_week_extended(s) === nothing
-        :week_extended
-    elseif is_week_basic(s) === nothing
-        :week_basic
-    elseif is_ordinal_extended(s) === nothing
-        :ordinal_extended
-    elseif is_ordinal_basic(s) === nothing
-        :ordinal_basic
+function parse_iso8601(s::AbstractString; warn::Bool=true)
+    # Quick length-based pre-check
+    hint = quick_format_check(s)
+    
+    if hint == :invalid
+        warn && @warn "Unable to parse as ISO 8601: string too short" input=s
+        return String(s)
+    end
+    
+    # Try most likely formats first based on length
+    format = nothing
+    
+    if hint == :date_basic && is_date_basic(s) === nothing
+        format = :date_basic
+    elseif hint == :date_extended && is_date_extended(s) === nothing
+        format = :date_extended
+    elseif hint == :datetime_basic && is_datetime_basic(s) === nothing
+        format = :datetime_basic
     else
-        nothing
+        # Full format detection
+        format = if is_datetime_tz_extended(s) === nothing
+            :datetime_tz_extended
+        elseif is_datetime_tz_basic(s) === nothing
+            :datetime_tz_basic
+        elseif is_datetime_extended(s) === nothing
+            :datetime_extended
+        elseif is_datetime_basic(s) === nothing
+            :datetime_basic
+        elseif is_date_extended(s) === nothing
+            :date_extended
+        elseif is_date_basic(s) === nothing
+            :date_basic
+        elseif is_week_extended(s) === nothing
+            :week_extended
+        elseif is_week_basic(s) === nothing
+            :week_basic
+        elseif is_ordinal_extended(s) === nothing
+            :ordinal_extended
+        elseif is_ordinal_basic(s) === nothing
+            :ordinal_basic
+        else
+            nothing
+        end
     end
     
     if format === nothing
+        warn && @warn "Unable to parse as ISO 8601: format not recognized" input=s
         return String(s)
     end
     
     try
         return parse_by_format(s, format)
-    catch
+    catch e
+        warn && @warn "Unable to parse as ISO 8601: parsing failed" input=s format=format exception=e
         return String(s)
     end
 end
@@ -104,9 +200,11 @@ function parse_by_format(s::AbstractString, format::Symbol)
     elseif format == :datetime_extended || format == :datetime_basic
         return parse_datetime_without_timezone(s, format)
     elseif format == :date_extended
-        return Date(s, dateformat"yyyy-mm-dd")
+        # Use fast path for simple cases
+        return length(s) == 10 ? parse_date_extended_fast(s) : Date(s, dateformat"yyyy-mm-dd")
     elseif format == :date_basic
-        return Date(s, dateformat"yyyymmdd")
+        # Use fast path for simple cases
+        return length(s) == 8 ? parse_date_basic_fast(s) : Date(s, dateformat"yyyymmdd")
     elseif format == :week_extended || format == :week_basic
         return parse_week_date(s, format)
     elseif format == :ordinal_extended || format == :ordinal_basic
@@ -116,101 +214,101 @@ function parse_by_format(s::AbstractString, format::Symbol)
     end
 end
 
+# Pre-compiled regex for timezone extraction
+const TZ_REGEX = r"(Z|[+-]\d{2}:?\d{2}|[A-Za-z_]+/[A-Za-z_]+)$"
+
 function parse_datetime_with_timezone(s::AbstractString, format::Symbol)
     # Extract timezone part
-    tz_match = match(r"(Z|[+-]\d{2}:?\d{2}|[A-Za-z_]+/[A-Za-z_]+)$", s)
+    tz_match = match(TZ_REGEX, s)
     if tz_match === nothing
         throw(ArgumentError("No timezone found"))
     end
     
     tz_str = tz_match.captures[1]
-    dt_str = s[1:tz_match.offset-1]
+    dt_str = @view s[1:tz_match.offset-1]
     
     # Parse the datetime part
-    if format == :datetime_tz_extended
-        # Try different separators
-        dt = try
-            DateTime(dt_str, dateformat"yyyy-mm-dd HH:MM:SS.s")
+    dt = if format == :datetime_tz_extended
+        # Try most common format first
+        try
+            DateTime(dt_str, dateformat"yyyy-mm-ddTHH:MM:SS")
         catch
-            try
-                DateTime(dt_str, dateformat"yyyy-mm-dd HH:MM:SS")
-            catch
+            # Try with fractional seconds
+            if occursin(".", dt_str)
                 DateTime(dt_str, dateformat"yyyy-mm-ddTHH:MM:SS.s")
+            else
+                # Try with space separator
+                DateTime(dt_str, dateformat"yyyy-mm-dd HH:MM:SS")
             end
         end
     else  # basic format
         # Handle fractional seconds
         if occursin(".", dt_str)
-            parts = split(dt_str, ".")
-            base_dt = DateTime(parts[1], dateformat"yyyymmddTHHMMSS")
-            frac = parse(Float64, "0." * parts[2])
-            dt = base_dt + Millisecond(round(Int, frac * 1000))
+            dot_pos = findfirst('.', dt_str)
+            base_str = @view dt_str[1:dot_pos-1]
+            frac_str = @view dt_str[dot_pos+1:end]
+            base_dt = DateTime(base_str, dateformat"yyyymmddTHHMMSS")
+            frac = parse(Float64, "0." * frac_str)
+            base_dt + Millisecond(round(Int, frac * 1000))
         else
-            dt = DateTime(dt_str, dateformat"yyyymmddTHHMMSS")
+            DateTime(dt_str, dateformat"yyyymmddTHHMMSS")
         end
     end
     
-    # Parse timezone
-    if tz_str == "Z"
-        tz = tz"UTC"
-    elseif startswith(tz_str, "+") || startswith(tz_str, "-")
-        # Parse offset
-        sign = tz_str[1] == '+' ? 1 : -1
-        offset_str = tz_str[2:end]
-        if contains(offset_str, ":")
-            hours, minutes = parse.(Int, split(offset_str, ":"))
-        else
-            hours = parse(Int, offset_str[1:2])
-            minutes = parse(Int, offset_str[3:4])
-        end
-        offset_seconds = sign * (hours * 3600 + minutes * 60)
-        tz = FixedTimeZone("UTC" * tz_str, offset_seconds)
-    else
-        # Named timezone
-        tz = TimeZone(tz_str)
-    end
+    # Use cached timezone
+    tz = get_cached_timezone(tz_str)
     
     return ZonedDateTime(dt, tz)
 end
 
+# Pre-compiled date formats
+const DT_EXTENDED_T = dateformat"yyyy-mm-ddTHH:MM:SS"
+const DT_EXTENDED_T_FRAC = dateformat"yyyy-mm-ddTHH:MM:SS.s"
+const DT_EXTENDED_SPACE = dateformat"yyyy-mm-dd HH:MM:SS"
+const DT_EXTENDED_SPACE_FRAC = dateformat"yyyy-mm-dd HH:MM:SS.s"
+const DT_BASIC = dateformat"yyyymmddTHHMMSS"
+
 function parse_datetime_without_timezone(s::AbstractString, format::Symbol)
     if format == :datetime_extended
-        # Try different separators and with/without fractional seconds
+        # Try most common format first
         try
-            DateTime(s, dateformat"yyyy-mm-dd HH:MM:SS.s")
+            DateTime(s, DT_EXTENDED_T)
         catch
-            try
-                DateTime(s, dateformat"yyyy-mm-dd HH:MM:SS")
-            catch
+            if occursin(".", s)
                 try
-                    DateTime(s, dateformat"yyyy-mm-ddTHH:MM:SS.s")
+                    DateTime(s, DT_EXTENDED_T_FRAC)
                 catch
-                    DateTime(s, dateformat"yyyy-mm-ddTHH:MM:SS")
+                    DateTime(s, DT_EXTENDED_SPACE_FRAC)
                 end
+            else
+                DateTime(s, DT_EXTENDED_SPACE)
             end
         end
     else  # basic format
         if occursin(".", s)
-            parts = split(s, ".")
-            base_dt = DateTime(parts[1], dateformat"yyyymmddTHHMMSS")
-            frac = parse(Float64, "0." * parts[2])
+            dot_pos = findfirst('.', s)
+            base_str = @view s[1:dot_pos-1]
+            frac_str = @view s[dot_pos+1:end]
+            base_dt = DateTime(base_str, DT_BASIC)
+            frac = parse(Float64, "0." * frac_str)
             base_dt + Millisecond(round(Int, frac * 1000))
         else
-            DateTime(s, dateformat"yyyymmddTHHMMSS")
+            DateTime(s, DT_BASIC)
         end
     end
 end
 
 function parse_week_date(s::AbstractString, format::Symbol)
     if format == :week_extended
-        m = match(r"^(\d{4})-W(\d{2})-(\d)$", s)
+        # Manual extraction for performance
+        year = parse(Int, @view s[1:4])
+        week = parse(Int, @view s[7:8])
+        dayofweek = parse(Int, @view s[10:10])
     else  # basic format
-        m = match(r"^(\d{4})W(\d{2})(\d)$", s)
+        year = parse(Int, @view s[1:4])
+        week = parse(Int, @view s[6:7])
+        dayofweek = parse(Int, @view s[8:8])
     end
-    
-    year = parse(Int, m.captures[1])
-    week = parse(Int, m.captures[2])
-    dayofweek = parse(Int, m.captures[3])
     
     # Calculate the date
     # First day of year
@@ -228,20 +326,19 @@ end
 
 function parse_ordinal_date(s::AbstractString, format::Symbol)
     if format == :ordinal_extended
-        m = match(r"^(\d{4})-(\d{3})$", s)
+        year = parse(Int, @view s[1:4])
+        dayofyear = parse(Int, @view s[6:8])
     else  # basic format
-        m = match(r"^(\d{4})(\d{3})$", s)
+        year = parse(Int, @view s[1:4])
+        dayofyear = parse(Int, @view s[5:7])
     end
-    
-    year = parse(Int, m.captures[1])
-    dayofyear = parse(Int, m.captures[2])
     
     return Date(year) + Day(dayofyear - 1)
 end
 
 # Helper function to check if parsing was successful
 function is_valid_iso8601(s::AbstractString)
-    result = parse_iso8601(s)
+    result = parse_iso8601(s, warn=false)
     return !(result isa String && result == s)
 end
 
@@ -249,6 +346,16 @@ end
 matches_iso8601_format(s::AbstractString, format::Symbol) = begin
     validator = Symbol("is_", format)
     getfield(@__MODULE__, validator)(s) === nothing
+end
+
+# Batch parsing for better performance
+"""
+    parse_iso8601_batch(strings::Vector{<:AbstractString}; warn::Bool=false) -> Vector
+
+Parse multiple ISO 8601 strings efficiently. Disables warnings by default for batch processing.
+"""
+function parse_iso8601_batch(strings::Vector{<:AbstractString}; warn::Bool=false)
+    [parse_iso8601(s, warn=warn) for s in strings]
 end
 
 # Test strings for ISO 8601 parser
@@ -350,3 +457,5 @@ function run_iso8601_tests(; strings = [
     end
     return results
 end
+
+end # module KMLTimeElementParsing
