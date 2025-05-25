@@ -2,6 +2,8 @@
 #  types.jl  –  all KML data structures *without* GeoInterface extensions
 #------------------------------------------------------------------------------
 
+using Dates, TimeZones
+
 # ─── internal helpers / constants ────────────────────────────────────────────
 const Coord2 = SVector{2,Float64}
 const Coord3 = SVector{3,Float64}
@@ -252,6 +254,20 @@ const screenXY = hotSpot
 const rotationXY = hotSpot
 const size = hotSpot # KML <size> for ScreenOverlay has x, y, xunits, yunits, matching hotSpot structure.
 
+#────────────────────────  TIME ELEMENTS  ────────────────────────────────
+Base.@kwdef mutable struct TimeStamp <: TimePrimitive
+    @object
+    @option when ::Union{TimeZones.ZonedDateTime, Dates.Date, String}
+end
+TAG_TO_TYPE[:TimeStamp] = TimeStamp
+
+Base.@kwdef mutable struct TimeSpan <: TimePrimitive
+    @object
+    @option begin_ ::Union{TimeZones.ZonedDateTime, Dates.Date, String}
+    @option end_ ::Union{TimeZones.ZonedDateTime, Dates.Date, String}
+end
+TAG_TO_TYPE[:TimeSpan] = TimeSpan
+
 #────────────────────  OBJECT‑LEVEL ELEMENTS (Reusable Components)   ─────────────────
 # These are general KML Objects that can be children of other elements or define properties.
 # They are not Features or Geometries themselves but are often used by them.
@@ -278,6 +294,10 @@ Base.@kwdef mutable struct Icon <: Object
     @option viewBoundScale ::Float64
     @option viewFormat ::String
     @option httpQuery ::String
+    @option x ::Int   
+    @option y ::Int  
+    @option w ::Int  # Width in pixels if the <href> specifies an icon palette
+    @option h ::Int  # Height in pixels if the <href> specifies an icon palette
 end
 
 Base.@kwdef mutable struct Orientation <: Object
@@ -533,22 +553,103 @@ Base.@kwdef mutable struct Snippet <: KMLElement{(:maxLines,)}
     maxLines::Int = 2
 end
 
-# Children can be <Data> (name/value pairs), <SchemaData> (typed data), or custom XML 
-# Used by Feature, gx_Track for custom data 
-Base.@kwdef mutable struct ExtendedData <: NoAttributes
-    @required children::Vector{Any}
+# For <Data name="string">
+#   <value>string_value</value>
+#   <displayName>string_display_name</displayName> # </Data>
+Base.@kwdef mutable struct Data <: KMLElement{(:name,)} # 'name' is an attribute
+    @object # If Data elements can have their own IDs (less common but possible)
+    # name::String is implicitly handled by KMLElement{(:name,)} if required as an attribute
+    # If 'name' is a required attribute, it should be a regular field:
+    # name::String -> This will be handled by add_attributes!
+    
+    @option value ::String          # From <value> child tag
+    @option displayName ::String    # From <displayName> child tag
+end
+TAG_TO_TYPE[:Data] = Data
+
+# For <SimpleData name="string">string_value</SimpleData> (used within SchemaData)
+Base.@kwdef mutable struct SimpleData <: KMLElement{(:name,)} # 'name' is an attribute
+    # name::String is implicitly handled by KMLElement{(:name,)}
+    content::String = "" # To store the direct text content of <SimpleData>
+end
+TAG_TO_TYPE[:SimpleData] = SimpleData
+
+# For <SchemaData schemaUrl="anyURI">
+#   (<SimpleData name="string">string_value</SimpleData>)+
+# </SchemaData>
+Base.@kwdef mutable struct SchemaData <: KMLElement{(:schemaUrl,)} # 'schemaUrl' is an attribute
+    @object # If SchemaData elements can have their own IDs
+    # schemaUrl::String is implicitly handled by KMLElement{(:schemaUrl,)}
+
+    # Using SimpleDataVec to avoid potential naming conflicts if a field was just 'SimpleData'
+    @option SimpleDataVec ::Vector{SimpleData}
+end
+TAG_TO_TYPE[:SchemaData] = SchemaData
+
+# Now, modify the ExtendedData definition:
+Base.@kwdef mutable struct ExtendedData <: NoAttributes # Or KMLElement{()}
+    @object # If ExtendedData itself can have an ID (uncommon, usually it's just a container)
+    # Use a Union to allow specific types and a fallback for other XML.
+    # Node can be used to store unparsed/untyped XML elements.
+    # If you only want to store recognized KML elements, replace Node with a more specific KMLElement.
+    @option children ::Vector{Union{Data, SchemaData, KMLElement, Node}}
+    # Using KMLElement allows any other KML types you've defined to also be children if valid.
+    # Using Node allows for truly arbitrary XML from other namespaces.
+    # If you expect only Data and SchemaData, it would be Vector{Union{Data, SchemaData}}.
+    # The previous @required children::Vector{Any} is very loose.
 end
 
 #──────────────  CONCRETE TOUR PRIMITIVES (Google Extensions)  ──────────────
 # These are the building blocks for gx:Tour playlists.
 # They are used to create a sequence of actions in a tour.
 
+# Abstract type for operations within an Update
+abstract type AbstractUpdateOperation <: Object end # Or KMLElement{()} if they don't have id/targetId
+
+# <Create> can contain any number of Features, Geometries, etc.
+Base.@kwdef mutable struct Create <: AbstractUpdateOperation
+    @object # If <Create> itself can have an ID
+    # KML spec says Create contains a Container (Folder, Document, Placemark)
+    # For simplicity, let's allow a vector of Features or KMLElements.
+    # If it always contains a single container, then use: @option Container ::Container
+    @option CreatedObjects::Vector{KMLElement} # Can hold any KML element being created
+end
+TAG_TO_TYPE[:Create] = Create
+
+# <Delete> targets Features to remove. Its children are Features (often just references or empty)
+Base.@kwdef mutable struct Delete <: AbstractUpdateOperation
+    @object # If <Delete> itself can have an ID
+    # KML spec says Delete contains Features to be deleted, referenced by targetId or with children.
+    # For simplicity, can also store Features directly if they are fully defined for deletion.
+    @option FeaturesToDelete::Vector{Feature}
+end
+TAG_TO_TYPE[:Delete] = Delete
+
+# <Change> modifies existing elements. Its children are the new state of those elements.
+Base.@kwdef mutable struct Change <: AbstractUpdateOperation
+    @object # If <Change> itself can have an ID
+    # Children are any Object elements (Feature, Geometry, Style, etc.) with targetId implicit or explicit
+    @option ObjectsToChange::Vector{Object} # Any Object can be a child representing the change
+end
+TAG_TO_TYPE[:Change] = Change
+
+# The <Update> element itself
+Base.@kwdef mutable struct Update <: KMLElement{()} # KML spec shows no attributes for <Update> itself
+    # targetHref is a child element of <Update>
+    @option targetHref ::String
+    # Create, Delete, Change operations
+    @option operations ::Vector{Union{Create, Delete, Change}}
+end
+TAG_TO_TYPE[:Update] = Update # Add Update itself to TAG_TO_TYPE
+
+# Modify gx_AnimatedUpdate
 Base.@kwdef mutable struct gx_AnimatedUpdate <: gx_TourPrimitive
     @object
     @option gx_duration ::Float64
-    @option Update ::NoAttributes
+    @option Update ::Update # Changed from NoAttributes to the new Update struct
     @option gx_delayedStart ::Float64
 end
+# gx_AnimatedUpdate is already in TAG_TO_TYPE via _collect_concrete!
 
 Base.@kwdef mutable struct gx_FlyTo <: gx_TourPrimitive
     @object
@@ -613,19 +714,30 @@ TAG_TO_TYPE[:atom_link] = AtomLink # Manual mapping for namespaced tag
     @option name ::String
     @option visibility ::Bool
     @option open ::Bool
-    @option atom_author ::AtomAuthor 
-    @option atom_link ::AtomLink 
+    @option atom_author ::AtomAuthor
+    @option atom_link ::AtomLink
     @option address ::String
-    @option xal_AddressDetails::String
+    @option xal_AddressDetails::String # Consider if this is simple text or a complex type
     @option phoneNumber ::String
     @option Snippet ::Snippet
     @option description ::String
     @option AbstractView ::AbstractView
-    @option TimePrimitive ::TimePrimitive
+    @option TimePrimitive ::TimePrimitive # KML standard TimeStamp/TimeSpan
     @option styleUrl ::String
     @option StyleSelectors ::Vector{StyleSelector}
     @option Region ::Region
     @option ExtendedData ::ExtendedData
+    
+    # --- Google Extension (gx:) Fields for Features ---
+    @altitude_mode_elements # This brings in gx_altitudeMode if it's not already there
+    @option gx_balloonVisibility ::Bool
+    # Add others that are simple children of Feature types:
+    # @option gx_snippet ::String  // If there's a gx version of Snippet (less common for Feature directly)
+    
+    # Note: More complex gx types like gx:Tour, gx:Track, gx:MultiTrack are usually defined
+    # as separate KMLElement structs and added via TAG_TO_TYPE, then become fields
+    # where appropriate (e.g. gx_Playlist might have gx_TourPrimitives which include gx:Track).
+    # Your gx_Track and gx_MultiTrack are already defined as Geometry/Object subtypes.
 end
 
 Base.@kwdef mutable struct Placemark <: Feature
@@ -648,15 +760,15 @@ end
 Base.@kwdef mutable struct gx_Track <: Geometry
     @object
     @altitude_mode_elements
-    @option when ::String
+    @option when ::Vector{Union{TimeZones.ZonedDateTime, Dates.Date, String}}
     @option gx_coord ::Union{Vector{Coord2},Vector{Coord3}}
-    @option gx_angles ::String
+    @option gx_angles ::String # gx:angles is a space-separated string of 3 tuples usually
     @option Model ::Model
     @option ExtendedData::ExtendedData
+    @option Icon ::Icon
 end
-Base.@kwdef mutable struct gx_MultiTrack
+Base.@kwdef mutable struct gx_MultiTrack <: Geometry
     @object
-    @altitude_mode_elements
     @option gx_interpolate::Bool
     @option gx_Track ::Vector{gx_Track}
 end
@@ -710,7 +822,6 @@ end
 Base.@kwdef mutable struct GroundOverlay <: Overlay
     @overlay
     @option altitude ::Float64
-    @altitude_mode_elements
     @option LatLonBox ::LatLonBox
     @option gx_LatLonQuad ::gx_LatLonQuad
 end

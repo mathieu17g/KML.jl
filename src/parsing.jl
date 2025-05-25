@@ -131,84 +131,81 @@ const ENUM_NAMES_SET = Set(names(Enums; all = true))             # Get all names
 
 # Fast object()  – deal with the handful of tags we care about
 function object(node::XML.Node)
-    sym = tagsym(node) # e.g. :atom_link, :atom_author, :Snippet, :Placemark
+    # Assuming 'node' is always an XML.Element when object() is called for KML types
+    sym = tagsym(XML.tag(node))
 
-    # ──  0. tags that ARE NOT KML types themselves (e.g., structural wrappers) ───
+    # ──  0. Structural tags (handled by add_element!) ─────────────────────────
     if sym === :outerBoundaryIs || sym === :innerBoundaryIs
         return nothing
     end
 
-    #? ──  0.5. tags that are not KML types but are KML-like (e.g., :Pair) ───────────
-    if sym == :Pair
-        # Handle Pair as a special case, assuming it's a KML-like type
-        T = KML.Pair
-        o = T()
-        add_attributes!(o, node)
-        for child_xml_node in XML.children(node)
-            add_element!(o, child_xml_node)
-        end
-        return o
-    end
-
-    # ──  1. tags that map straight to KML types  ─────────────────────────────
-    if haskey(TAG_TO_TYPE, sym) # This will now find :atom_author and :atom_link
+    # ──  1. Tags mapping directly to KML types via TAG_TO_TYPE ──────────────────
+    if haskey(TAG_TO_TYPE, sym)
         T = TAG_TO_TYPE[sym]
         o = T()
-        add_attributes!(o, node) # Parses href, rel etc. for AtomLink; any attributes for AtomAuthor
+        add_attributes!(o, node) # Assumes add_attributes! correctly uses XML.attributes(node)
 
-        # Special handling for Snippet's direct text content (keep this from previous fix)
-        if T === KML.Snippet
+        if T === Snippet || T === SimpleData # Add KML.SimpleData here
             if hasfield(T, :content) && fieldtype(T, :content) === String
-                node_children = XML.children(node)
-                text_parts = String[] # Initialize to avoid UndefVarError if no text nodes
-                has_other_elements = false
-                for child_node_val in node_children
-                    if XML.is_text(child_node_val)
+                text_parts = String[]
+                for child_node_val in XML.children(node) # Iterate children of <Snippet> or <SimpleData>
+                    if nodetype(child_node_val) === XML.Text || nodetype(child_node_val) === XML.CData # Corrected
                         push!(text_parts, XML.value(child_node_val))
-                    elseif !XML.is_comment(child_node_val) && !XML.is_dtd(child_node_val)
-                        has_other_elements = true
+                    elseif nodetype(child_node_val) === XML.Element && T === KML.Snippet
+                        # If Snippet specifically could have other defined element children for other fields
+                        # add_element!(o, child_node_val) 
                     end
                 end
-                if !has_other_elements || isempty(node_children)
-                    setfield!(o, :content, String(strip(join(text_parts)))) # Ensure String
-                else
-                    # Fallback for Snippet if it has unexpected child elements that might be other defined fields
-                    for child_xml_node_fallback in XML.children(node)
-                        add_element!(o, child_xml_node_fallback)
+                setfield!(o, :content, String(strip(join(text_parts))))
+            end
+            # If Snippet/SimpleData have other fields defined as KML elements (unlikely for SimpleData)
+            if T === KML.Snippet # Or more generally, if T can have other element children for other fields
+                for child_element_node in XML.children(node)
+                    if nodetype(child_element_node) === XML.Element
+                        # Avoid re-processing if content was formed from these elements above,
+                        # this loop is for distinct other fields of Snippet if any.
+                        # add_element!(o, child_element_node) # This line might need to be more selective
                     end
-                end
-            else # KML.Snippet does not have :content::String (shouldn't happen)
-                for child_xml_node in XML.children(node) # Generic processing for other fields
-                    add_element!(o, child_xml_node)
                 end
             end
+            # For Snippet and SimpleData, usually no further KML *element* children define other fields.
+            # If they could, the generic loop below would be needed, but filtered.
         else
-            # Generic child element parsing for all other types (INCLUDING AtomAuthor and AtomLink)
-            # For AtomAuthor, this processes children like <name>, <uri>, <email>.
-            # For AtomLink, this loop should ideally be empty for standard atom:link.
-            for child_xml_node in XML.children(node)
-                add_element!(o, child_xml_node)
+            # Generic parsing of *child ELEMENTS* for all other KMLElement types
+            for child_element_node in XML.children(node)
+                if nodetype(child_element_node) === XML.Element
+                    add_element!(o, child_element_node)
+                end
             end
         end
         return o
     end
 
-    # ──  2. enums  ───────────────────────────────────────────────────────────
-    if sym in ENUM_NAMES_SET # Assumes ENUM_NAMES_SET is defined
-        return getproperty(Enums, sym)(XML.value(only(node)))
+    # ──  2. Enums ───────────────────────────────────────────────────────────────
+    if sym in ENUM_NAMES_SET
+        node_children = XML.children(node)
+        # Enum tag <myEnum>value</myEnum> should have one XML.Text child.
+        if length(node_children) == 1 && XML.nodetype(node_children[1]) === XML.Text # Correct type check
+            return getproperty(Enums, sym)(XML.value(node_children[1]))
+        else
+            @warn "Enum tag <$(XML.tag(node))> did not contain simple text as expected."
+            text_parts = [XML.value(c) for c in node_children if XML.nodetype(c) === XML.Text] # Correct type check
+            if !isempty(text_parts)
+                return getproperty(Enums, sym)(strip(join(text_parts)))
+            else
+                return nothing
+            end
+        end
     end
 
-    # ──  3. <name>, <description>, … fast scalar leafs that are not children of other KMLElements
-    # This path is taken if the tag itself represents a simple value AND is not mapped in TAG_TO_TYPE.
-    # This might be less common if all textual leaf tags are children of complex types.
-    if XML.is_simple(node)
-        # This could be for simple elements like <extrude>0</extrude> if they are directly processed by object()
-        # rather than always through add_element!
-        return XML.value(only(node))
+    # ──  3. Simple leaf tags (handled if object() is called on them directly)
+    if XML.is_simple(node) # True if no attrs, one child, and that child is Text or CData
+        single_child = only(XML.children(node)) # This is safe due to is_simple definition
+        return String(XML.value(single_child)) # Correctly gets content of Text or CData
     end
 
-    # ──  4. fallback to the generic code with logging  ───────────────────────
-    return _object_slow(node) # This is where the "Unhandled Tag: 'atom:link'" warning came from
+    # ──  4. Fallback ─────────────────────────────────────────────────────────────
+    return _object_slow(node)
 end
 
 const KML_NAMES_SET = Set(names(KML; all = true, imported = true)) # Get all names in KML
@@ -413,194 +410,489 @@ function _parse_coordinates_automa(txt::AbstractString)
     end
 end
 
-function add_element!(parent::Union{Object,KMLElement}, child::XML.Node)
-    # ── 0. pre‑compute a few things ───────────────────────────────
-    fname = tagsym(child.tag)                     # tag → field name
-    simple = XML.is_simple(child)
+# -----------------------------------------------------------------------------
+# Main add_element! function (now much shorter)
+# -----------------------------------------------------------------------------
+function add_element!(parent::Union{KML.Object,KML.KMLElement}, child_xml_node::XML.Node)
+    child_parsed_val = object(child_xml_node) # Returns KML.KMLElement, String, or nothing
 
-    # ── 1. *Scalar* leaf node (fast path) ─────────────────────────
-    if simple
-        hasfield(typeof(parent), fname) || return       # ignore strangers
+    if child_parsed_val isa KML.KMLElement
+        _assign_complex_kml_object!(parent, child_parsed_val, XML.tag(child_xml_node))
+        return
+    elseif child_parsed_val isa String
+        # object() parsed child_xml_node into a simple String value.
+        # The tag name of child_xml_node itself is the field in 'parent'.
+        field_name_sym = tagsym(XML.tag(child_xml_node))
+        _convert_and_set_simple_field!(parent, field_name_sym, child_parsed_val, XML.tag(child_xml_node))
+        return
+    else # child_parsed_val is nothing (or unexpected type)
+        # This means child_xml_node is structural, a simple field that object() didn't pre-parse to string,
+        # or an unhandled tag.
+        field_name_sym = tagsym(XML.tag(child_xml_node)) # child_xml_node is, e.g., <description>
 
-        txt = XML.value(XML.only(child))                # raw text
-        ftype = typemap(typeof(parent))[fname]          # cached Dict
-
-        # ─────────────────────────────────────────────────────────────
-        # (a) the easy built‑ins
-        # ─────────────────────────────────────────────────────────────
-
-        val = if ftype === String
-            txt
-        elseif ftype <: Integer
-            txt == "" ? zero(ftype) : Parsers.parse(ftype, txt)
-        elseif ftype <: AbstractFloat
-            txt == "" ? zero(ftype) : Parsers.parse(ftype, txt)
-        elseif ftype <: Bool
-            len = length(txt)
-            if len == 1
-                txt[1] == '1'
-                # KML spec often uses "true"/"false" as well as "1"/"0"
-            elseif len == 4 && # "true"
-                   (txt[1] == 't' || txt[1] == 'T') &&
-                   (txt[2] == 'r' || txt[2] == 'R') &&
-                   (txt[3] == 'u' || txt[3] == 'U') &&
-                   (txt[4] == 'e' || txt[4] == 'E')
-                true
-            elseif len == 5 && # "false"
-                   (txt[1] == 'f' || txt[1] == 'F') &&
-                   (txt[2] == 'a' || txt[2] == 'A') &&
-                   (txt[3] == 'l' || txt[3] == 'L') &&
-                   (txt[4] == 's' || txt[4] == 'S') &&
-                   (txt[5] == 'e' || txt[5] == 'E')
-                false
-            else
-                # Fallback for "0" or other KML-valid representations if necessary,
-                # or treat as false/error for non-standard.
-                # Assuming "0" should also be false if not "1" or "true":
-                false # Or: error("Invalid KML boolean string: '$txt'")
-            end
-        elseif ftype <: Enums.AbstractKMLEnum
-            ftype(txt)
-
-            # ─────────────────────────────────────────────────────────────────────
-            # (b) Special handling for the “coordinates” field name:
-            #     - the raw tag contains a whitespace-delimited list of 2D or 3D points (lon,lat[,alt])
-            #     - use the Automata‐based parser (_parse_coordinates_automa) for robust, high-performance parsing
-            #     - convert the parsed Float64 values into:
-            #         • a Vector{SVector{3,Float64}} or Vector{SVector{2,Float64}} when the field expects a sequence
-            #         • a single SVector{3,Float64} or SVector{2,Float64} when the field expects one coordinate
-            # ─────────────────────────────────────────────────────────────────────
-
-        elseif fname === :coordinates
-            # TODO: Implement a KMLParsingWarningContext to track warnings across the file,
-            # TODO: allowing for one detailed warning and a count of subsequent similar warnings
-            # TODO: for specific cases like this. This would involve passing a context object
-            # TODO: through the parsing functions.
-            parsed_coords_vec = _parse_coordinates_automa(txt)
-            # This whole inner if/elseif/else determines the value for this branch
-            if isempty(parsed_coords_vec)
-                # For @option fields, the correct representation of "no valid coordinates" is `nothing`.
-                nothing
-            elseif ftype <: Union{Coord2,Coord3} # Point coordinates, non-empty
-                if length(parsed_coords_vec) == 1
-                    convert(ftype, parsed_coords_vec[1])
-                else
-                    error(
-                        "KML Parsing: Coordinate string '$txt' for Point field '$fname' (type $ftype) resulted in $(length(parsed_coords_vec)) coordinates. Expected one.",
-                    )
-                end
-            elseif ftype <: AbstractVector # LineString, LinearRing, gx_Track coordinates, non-empty
-                parsed_coords_vec
-            else
-                error("KML Parsing: Unexpected field type $ftype for coordinate data from '$txt' in $(typeof(parent)).")
-            end
-
-            # ─────────────────────────────────────────────────────────────────────
-            # (c) Special handling for the Google Earth extension field `gx_coord` (from <gx:coord>):
-            #     - parse the raw coordinate text using the Automata-based parser
-            #     - if no coordinates are found, assign `nothing` when allowed or create an empty container
-            #     - otherwise, convert the parsed vectors of Float64 into the declared `ftype` (e.g. Vector{SVector{2,Float64}})
-            # ─────────────────────────────────────────────────────────────────────
-
-        elseif fname === :gx_coord
-            parsed_vec = _parse_coordinates_automa(txt)
-            if isempty(parsed_vec)
-                # Decide: error, or assign empty Vector of a default SVector type, or Nothing if allowed
-                if Nothing <: ftype
-                    val = nothing
-                else
-                    # gx_Track might allow empty gx_coord conceptually.
-                    # Choose a default empty vector type, e.g. Vector{Coord2}()
-                    # This needs care if _parse_coordinates_automa doesn't give enough info for Coord2 vs Coord3 when empty
-                    # For now, let's assume _parse_coordinates_automa returns Vector{SVector{0,Float64}}[] or similar
-                    # which convert would handle.
-                    val = ftype() # Tries to create an empty instance of the Vector{CoordN} part
-                end
-            else
-                val = convert(ftype, parsed_vec) # convert will pick the right Vector{CoordN} from Union
-            end
-
-            # ─────────────────────────────────────────────────────────────────────
-            # (d) Fallback – delegate to the generic helper for any remaining field
-            #     • No specialized parsing matched; let `autosetfield!` apply the raw text
-            #     • This covers edge‐cases or unexpected tags uniformly
-            # ─────────────────────────────────────────────────────────────────────
-
-        else
-            autosetfield!(parent, fname, txt)
+        if parent isa KML.Polygon && (field_name_sym === :outerBoundaryIs || field_name_sym === :innerBoundaryIs)
+            _handle_polygon_boundary!(parent, child_xml_node, field_name_sym)
             return
         end
 
-        setfield!(parent, fname, val)
+        # Check if the parent expects a String for this field name.
+        # This should catch <description>, <text> in BalloonStyle, etc.
+        if hasfield(typeof(parent), field_name_sym) &&
+           Base.nonnothingtype(fieldtype(typeof(parent), field_name_sym)) === String
+
+            # Aggressively get all inner content as a string, including serializing child HTML elements.
+            buffer = IOBuffer()
+            for content_child_node in XML.children(child_xml_node) # Iterate children of <description>
+                # XML.jl's print method for Node should serialize it back to XML string form
+                print(buffer, content_child_node)
+            end
+            text_content_for_field = String(strip(String(take!(buffer))))
+
+            # If the tag was truly empty (e.g., <description/>), children might be empty.
+            if isempty(XML.children(child_xml_node)) && isempty(text_content_for_field)
+                text_content_for_field = ""
+            end
+
+            # Call _convert_and_set_simple_field!, which will just assign the string
+            # as the target type is String.
+            _convert_and_set_simple_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node))
+            return
+
+            # Fallback for other simple fields (if XML.is_simple is true and it wasn't a String field above)
+        elseif XML.is_simple(child_xml_node) && hasfield(typeof(parent), field_name_sym)
+            # child_xml_node has no attributes and exactly one Text or CData child.
+            single_child = only(XML.children(child_xml_node)) # Known to be Text or CData
+            text_content_for_field = String(XML.value(single_child))
+
+            _convert_and_set_simple_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node))
+            return
+        end
+
+        # If still unhandled
+        @warn "Unhandled tag $field_name_sym (from XML <$(XML.tag(child_xml_node))>) for parent $(typeof(parent)). `object()` returned `nothing`, and it wasn't a recognized simple field or handled structural tag."
+    end
+end
+
+# -----------------------------------------------------------------------------
+# Helper Function: Assigning parsed KML.KMLElement objects
+# -----------------------------------------------------------------------------
+function _assign_complex_kml_object!(
+    parent::Union{KML.Object,KML.KMLElement},
+    child_kml_object::KML.KMLElement,
+    child_xml_tag_str::String,
+)
+    T_child_obj = typeof(child_kml_object)
+    assigned = false
+    for (field_name_sym, field_type_in_parent) in typemap(parent)
+        if T_child_obj <: field_type_in_parent
+            setfield!(parent, field_name_sym, child_kml_object)
+            assigned = true
+            break
+        elseif field_type_in_parent <: AbstractVector && T_child_obj <: eltype(field_type_in_parent)
+            vec = getfield(parent, field_name_sym)
+            if vec === nothing
+                setfield!(parent, field_name_sym, eltype(field_type_in_parent)[])
+                vec = getfield(parent, field_name_sym)
+            end
+            push!(vec, child_kml_object)
+            assigned = true
+            break
+        end
+    end
+    if !assigned
+        @warn "Parsed KML object of type $(T_child_obj) (from tag <$(child_xml_tag_str)>) could not be assigned to any compatible field in parent $(typeof(parent)). Review type definitions."
+    end
+end
+
+# -----------------------------------------------------------------------------
+# Helper Function: Converting string values and setting simple fields
+# Main Dispatcher for Simple Fields
+# -----------------------------------------------------------------------------
+function _convert_and_set_simple_field!(
+    parent::Union{KML.Object,KML.KMLElement},
+    field_name_sym::Symbol,
+    raw_text_from_kml::String,
+    child_xml_tag_str::String, # Original XML tag string for warnings
+)
+    # Field name mapping for KML <begin>/<end> tags to Julia :begin_/:end_ fields
+    true_field_name = field_name_sym
+    if parent isa KML.TimeSpan # Specific to TimeSpan parent
+        if field_name_sym === :begin
+            true_field_name = :begin_
+        end
+        if field_name_sym === :end
+            true_field_name = :end_
+        end
+    end
+
+    if !hasfield(typeof(parent), true_field_name)
+        @warn "Tag <$(child_xml_tag_str)> resolved by object() to String '$(raw_text_from_kml)', but no field named '$field_name_sym' (or mapped '$true_field_name') exists in parent of type $(typeof(parent))." [
+            cite:190,
+            384,
+            500,
+        ]
         return
     end
 
-    # ── 2. complex child object – recurse ─────────────────────────
-    child_obj = object(child)
-    if child_obj !== nothing
-        # push it into the FIRST matching slot we find
-        T = typeof(child_obj)
-        for (field, FT) in typemap(parent)
-            if T <: FT
-                setfield!(parent, field, child_obj)
-                return
-            elseif FT <: AbstractVector && T <: eltype(FT)
-                vec = getfield(parent, field)
-                if vec === nothing
-                    setfield!(parent, field, eltype(FT)[])
-                    vec = getfield(parent, field)
+    ftype_original = fieldtype(typeof(parent), true_field_name)
+    processed_string_val = String(raw_text_from_kml)
+
+    # Handle empty string for optional fields at the top level
+    if isempty(processed_string_val) && Nothing <: ftype_original
+        setfield!(parent, true_field_name, nothing)
+        return
+    end
+
+    # Dispatch to vector or scalar handler
+    # Base.nonnothingtype is used because ftype_original could be Union{Nothing, Vector{...}} or Union{Nothing, ScalarType}
+    non_nothing_ftype = Base.nonnothingtype(ftype_original)
+
+    if true_field_name === :coordinates || true_field_name === :gx_coord
+        parsed_coords_vec = _parse_coordinates_automa(processed_string_val) # 
+        final_val_to_set = nothing
+        if isempty(parsed_coords_vec)
+            final_val_to_set =
+                Nothing <: ftype_original ? nothing : (non_nothing_ftype <: AbstractVector ? non_nothing_ftype() : nothing) # 
+        elseif non_nothing_ftype <: Union{KML.Coord2,KML.Coord3} # For Point.coordinates
+            if length(parsed_coords_vec) == 1
+                final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec[1]) # 
+            else
+                @warn "Point field $true_field_name expected 1 coordinate, got $(length(parsed_coords_vec)). Assigning $(Nothing <: ftype_original ? "nothing" : "first if possible")." # 
+                final_val_to_set =
+                    Nothing <: ftype_original ? nothing :
+                    (length(parsed_coords_vec) >= 1 ? convert(non_nothing_ftype, parsed_coords_vec[1]) : nothing) # 
+            end
+        elseif non_nothing_ftype <: AbstractVector # For LineString.coordinates, LinearRing.coordinates etc.
+            final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec) # 
+        else
+            @warn "Unhandled type $non_nothing_ftype for coordinate field $true_field_name parsing '$processed_string_val'" # 
+            final_val_to_set = processed_string_val # Fallback
+        end
+        setfield!(parent, true_field_name, final_val_to_set)
+        return # Coordinates handled
+
+    # Dispatch to vector or scalar handler for other simple types
+    elseif non_nothing_ftype <: AbstractVector && let el_type = eltype(non_nothing_ftype) # Check element type of the vector
+        # Ensure this logic correctly identifies vectors of simple, non-KMLElement types
+        # Example: true if el_type is String, Int, or the TimeUnion.
+        # This was the previous condition: !(el_type <: KML.KMLElement)
+        # A more specific check might be better:
+        Base.nonnothingtype(el_type) === String ||
+            Base.nonnothingtype(el_type) <: Integer ||
+            Base.nonnothingtype(el_type) <: AbstractFloat ||
+            Base.nonnothingtype(el_type) <: Bool ||
+            Base.nonnothingtype(el_type) <: KML.Enums.AbstractKMLEnum ||
+            el_type == Union{TimeZones.ZonedDateTime,Dates.Date,String} ||
+            el_type == Union{Dates.Date,TimeZones.ZonedDateTime,String} ||
+            el_type == Union{TimeZones.ZonedDateTime,String,Dates.Date} ||
+            el_type == Union{String,TimeZones.ZonedDateTime,Dates.Date} ||
+            el_type == Union{Dates.Date,String,TimeZones.ZonedDateTime} ||
+            el_type == Union{String,Dates.Date,TimeZones.ZonedDateTime}
+    end
+        _parse_and_append_to_simple_vector!(
+            parent,
+            true_field_name,
+            ftype_original,
+            non_nothing_ftype,
+            processed_string_val,
+            child_xml_tag_str,
+        )
+    else # It's a scalar field (and not coordinates)
+        _parse_and_set_scalar_field!(
+            parent,
+            true_field_name,
+            ftype_original,
+            non_nothing_ftype,
+            processed_string_val,
+            child_xml_tag_str,
+        )
+    end
+end
+
+# -----------------------------------------------------------------------------
+# Helper Function: Parse and Append to a Vector of Simple Types
+# -----------------------------------------------------------------------------
+function _parse_and_append_to_simple_vector!(
+    parent::Union{KML.Object,KML.KMLElement},
+    true_field_name::Symbol,
+    ftype_original::Type, # Original field type, e.g., Union{Nothing, Vector{Union{ZonedDateTime,Date,String}}}
+    vec_type::Type,       # Non-nothing vector type, e.g., Vector{Union{ZonedDateTime,Date,String}}
+    processed_string_val::String, # The string value of *one* child XML tag (e.g., one <when> tag)
+    child_xml_tag_str::String,
+)
+    el_type_original = eltype(vec_type) # Element type, e.g., Union{ZonedDateTime,Date,String}
+    actual_el_type = Base.nonnothingtype(el_type_original) # Non-nothing element type for parsing
+
+    parsed_element_val = nothing
+
+    # Handle empty string for an element if the element type itself can be Nothing
+    # (This check is also at the top of _convert_and_set_simple_field!, but specific to element here)
+    if isempty(processed_string_val) && Nothing <: el_type_original
+        parsed_element_val = nothing
+        # TimePrimitive Union handling for vector elements
+    elseif el_type_original == Union{TimeZones.ZonedDateTime,Dates.Date,String} ||
+           el_type_original == Union{Dates.Date,TimeZones.ZonedDateTime,String} ||
+           el_type_original == Union{TimeZones.ZonedDateTime,String,Dates.Date} ||
+           el_type_original == Union{String,TimeZones.ZonedDateTime,Dates.Date} ||
+           el_type_original == Union{Dates.Date,String,TimeZones.ZonedDateTime} ||
+           el_type_original == Union{String,Dates.Date,TimeZones.ZonedDateTime}
+
+        parsed_time_successfully_for_vector = false
+        try
+            parsed_element_val = TimeZones.ZonedDateTime(processed_string_val)
+            parsed_time_successfully_for_vector = true
+        catch e_zoned_vec
+            try
+                parsed_element_val = Dates.Date(processed_string_val)
+                parsed_time_successfully_for_vector = true
+            catch e_date_vec
+                try
+                    parsed_element_val = Dates.DateTime(processed_string_val) # KML dateTime can include time
+                    parsed_time_successfully_for_vector = true
+                catch e_datetime_vec
+                    if (length(processed_string_val) == 4 && occursin(r"^\d{4}$", processed_string_val)) ||
+                       (length(processed_string_val) == 7 && occursin(r"^\d{4}-\d{2}$", processed_string_val))
+                        parsed_element_val = processed_string_val # Store YYYY or YYYY-MM as String
+                        parsed_time_successfully_for_vector = true
+                        @info "Storing KML partial date '$processed_string_val' as String element for vector field $true_field_name."
+                    else
+                        @warn "Failed to parse '$processed_string_val' as ZonedDateTime, Date, or DateTime for vector element in field $true_field_name. Storing as raw string. Errors: ZDT: $e_zoned_vec, Date: $e_date_vec, DT: $e_datetime_vec"
+                        parsed_element_val = processed_string_val
+                        parsed_time_successfully_for_vector = true
+                    end
                 end
-                push!(vec, child_obj)
-                return
             end
         end
-        error("Unhandled child type: $(T) for parent $(typeof(parent))")
+        if !parsed_time_successfully_for_vector && !(Nothing <: el_type_original && isempty(processed_string_val))
+            @warn "Final fallback for time vector element field $true_field_name with value '$processed_string_val', storing as string."
+            parsed_element_val = processed_string_val
+        end
+        # Other simple types for vector elements
     else
-        # legacy edge‑cases (<outerBoundaryIs>, <innerBoundaryIs>, …)
-        if fname === :outerBoundaryIs
-            if parent isa KML.Polygon && hasfield(typeof(parent), :outerBoundaryIs)
-                element_children = collect(XML.elements(child)) # Get only element children
-                if length(element_children) == 1
-                    lr_node = element_children[1]
-                    if XML.tag(lr_node) == "LinearRing" # Check if the single child is indeed LinearRing
-                        setfield!(parent, :outerBoundaryIs, object(lr_node))
-                    else
-                        @warn "<outerBoundaryIs> for Polygon contained a <$(XML.tag(lr_node))> element instead of the expected <LinearRing>."
-                        # Decide how to handle: set to nothing, error, or try to parse anyway if compatible
-                    end
-                else
-                    @warn "<outerBoundaryIs> for Polygon did not contain exactly one child element (e.g., <LinearRing>). Found $(length(element_children)) element children."
-                    # Log children tags for debugging: for el_child in element_children @info "Child: <$(XML.tag(el_child))>" end
-                end
+        if actual_el_type === String
+            parsed_element_val = processed_string_val
+        elseif actual_el_type <: Integer
+            parsed_element_val =
+                isempty(processed_string_val) ? (Nothing <: el_type_original ? nothing : zero(actual_el_type)) :
+                Parsers.parse(actual_el_type, processed_string_val)
+        elseif actual_el_type <: AbstractFloat
+            parsed_element_val =
+                isempty(processed_string_val) ? (Nothing <: el_type_original ? nothing : zero(actual_el_type)) :
+                Parsers.parse(actual_el_type, processed_string_val)
+        elseif actual_el_type <: Bool
+            len_el = length(processed_string_val)
+            if len_el == 1
+                parsed_element_val = (processed_string_val[1] == '1')
+            elseif len_el == 4 && uppercase(processed_string_val) == "TRUE"
+                parsed_element_val = true
+            elseif len_el == 5 && uppercase(processed_string_val) == "FALSE"
+                parsed_element_val = false
             else
-                @warn "Encountered <outerBoundaryIs> for non-Polygon parent or parent without :outerBoundaryIs field: $(typeof(parent))"
+                parsed_element_val = (Nothing <: el_type_original ? nothing : false)
             end
-        elseif fname === :innerBoundaryIs
-            if parent isa KML.Polygon && hasfield(typeof(parent), :innerBoundaryIs)
-                element_children = collect(XML.elements(child)) # Get only element children
-                if length(element_children) == 1
-                    lr_node = element_children[1]
-                    if XML.tag(lr_node) == "LinearRing"
-                        parsed_linear_ring_obj = object(lr_node)
-                        if parsed_linear_ring_obj isa KML.LinearRing
-                            if getfield(parent, :innerBoundaryIs) === nothing
-                                setfield!(parent, :innerBoundaryIs, KML.LinearRing[])
-                            end
-                            push!(getfield(parent, :innerBoundaryIs), parsed_linear_ring_obj)
-                        else
-                            @warn "Parsed object inside <innerBoundaryIs> is not a KML.LinearRing, but $(typeof(parsed_linear_ring_obj)). Parent: $(typeof(parent))"
-                        end
+        elseif actual_el_type <: KML.Enums.AbstractKMLEnum
+            parsed_element_val =
+                isempty(processed_string_val) && Nothing <: el_type_original ? nothing : actual_el_type(processed_string_val)
+        else
+            @warn "Unhandled element type $actual_el_type for vector field $true_field_name. Storing raw string '$processed_string_val' for element."
+            parsed_element_val = processed_string_val # Fallback to string
+        end
+    end
+
+    # Get or initialize the vector in the parent object
+    current_vector = getfield(parent, true_field_name)
+    if current_vector === nothing
+        # Initialize with an empty vector. The eltype of `vec_type` is `el_type_original`.
+        new_empty_vector = el_type_original[] # This creates Vector{UnionProperty{Nothing, ZonedDateTime, Date, String}} for instance
+        setfield!(parent, true_field_name, new_empty_vector)
+        current_vector = new_empty_vector
+    end
+
+    # Push the parsed element, respecting if `parsed_element_val` is `nothing` and the vector's eltype allows `Nothing`
+    if parsed_element_val !== nothing || (Nothing <: el_type_original)
+        push!(current_vector, parsed_element_val)
+    elseif !isempty(processed_string_val)
+        @warn "Could not push unparsed non-empty value '$processed_string_val' into vector for $true_field_name as element type $el_type_original does not allow it or parsing failed."
+    end
+end
+
+
+# -----------------------------------------------------------------------------
+# Helper Function: Parse and Set a Scalar Simple Field
+# -----------------------------------------------------------------------------
+function _parse_and_set_scalar_field!(
+    parent::Union{KML.Object,KML.KMLElement},
+    true_field_name::Symbol,
+    ftype_original::Type,    # Original field type from struct, e.g. Union{Nothing, String}
+    non_nothing_ftype::Type, # Result of Base.nonnothingtype(ftype_original), e.g. String
+    processed_string_val::String,
+    child_xml_tag_str::String,
+)
+    final_val_to_set = nothing # Initialize
+
+    # Note: The case for `isempty(processed_string_val) && Nothing <: ftype_original`
+    # is handled in the main _convert_and_set_simple_field! before dispatching here.
+    # So, if we are here and processed_string_val is empty, it means the field is NOT optional.
+
+    # TimePrimitive handling for SCALAR fields (Union{TimeZones.ZonedDateTime, Dates.Date, String})
+    if non_nothing_ftype == Union{TimeZones.ZonedDateTime,Dates.Date,String} ||
+       non_nothing_ftype == Union{Dates.Date,TimeZones.ZonedDateTime,String} || # Order variations
+       non_nothing_ftype == Union{TimeZones.ZonedDateTime,String,Dates.Date} ||
+       non_nothing_ftype == Union{String,TimeZones.ZonedDateTime,Dates.Date} ||
+       non_nothing_ftype == Union{Dates.Date,String,TimeZones.ZonedDateTime} ||
+       non_nothing_ftype == Union{String,Dates.Date,TimeZones.ZonedDateTime}
+
+        parsed_time_successfully = false
+        try
+            final_val_to_set = TimeZones.ZonedDateTime(processed_string_val)
+            parsed_time_successfully = true
+        catch e_zoned
+            try
+                final_val_to_set = Dates.Date(processed_string_val)
+                parsed_time_successfully = true
+            catch e_date
+                try
+                    final_val_to_set = Dates.DateTime(processed_string_val)
+                    parsed_time_successfully = true
+                catch e_datetime
+                    if (length(processed_string_val) == 4 && occursin(r"^\d{4}$", processed_string_val)) ||
+                       (length(processed_string_val) == 7 && occursin(r"^\d{4}-\d{2}$", processed_string_val))
+                        final_val_to_set = processed_string_val
+                        parsed_time_successfully = true
+                        @info "Storing KML partial date '$processed_string_val' as String for scalar field $true_field_name."
                     else
-                        @warn "<innerBoundaryIs> for Polygon contained a <$(XML.tag(lr_node))> element instead of the expected <LinearRing>."
+                        @warn "Failed to parse '$processed_string_val' as ZonedDateTime, Date, or DateTime for scalar field $true_field_name. Storing as raw string. Errors: ZDT: $e_zoned, Date: $e_date, DT: $e_datetime"
+                        final_val_to_set = processed_string_val
+                        parsed_time_successfully = true
                     end
-                else
-                    @warn "<innerBoundaryIs> for Polygon did not contain exactly one child element (e.g., <LinearRing>). Found $(length(element_children)) element children."
                 end
+            end
+        end
+        if !parsed_time_successfully && !(Nothing <: ftype_original && isempty(processed_string_val)) # Redundant check, already handled
+            @warn "Final fallback for time field $true_field_name with value '$processed_string_val', storing as string."
+            final_val_to_set = processed_string_val
+        end
+    else # Other scalar types
+        # `non_nothing_ftype` here is the actual_type_scalar from your previous version
+        if non_nothing_ftype === String
+            final_val_to_set = processed_string_val
+        elseif non_nothing_ftype <: Integer
+            final_val_to_set =
+                isempty(processed_string_val) ? (Nothing <: ftype_original ? nothing : zero(non_nothing_ftype)) :
+                Parsers.parse(non_nothing_ftype, processed_string_val)
+        elseif non_nothing_ftype <: AbstractFloat
+            final_val_to_set =
+                isempty(processed_string_val) ? (Nothing <: ftype_original ? nothing : zero(non_nothing_ftype)) :
+                Parsers.parse(non_nothing_ftype, processed_string_val)
+        elseif non_nothing_ftype <: Bool
+            len = length(processed_string_val)
+            if len == 1
+                final_val_to_set = (processed_string_val[1] == '1')
+            elseif len == 4 && uppercase(processed_string_val) == "TRUE"
+                final_val_to_set = true
+            elseif len == 5 && uppercase(processed_string_val) == "FALSE"
+                final_val_to_set = false
             else
-                @warn "Encountered <innerBoundaryIs> for non-Polygon parent or parent without :innerBoundaryIs field: $(typeof(parent))"
+                final_val_to_set = (Nothing <: ftype_original ? nothing : false)
+            end
+        elseif non_nothing_ftype <: KML.Enums.AbstractKMLEnum
+            final_val_to_set =
+                isempty(processed_string_val) && Nothing <: ftype_original ? nothing :
+                non_nothing_ftype(processed_string_val)
+        elseif true_field_name === :coordinates || true_field_name === :gx_coord
+            parsed_coords_vec = _parse_coordinates_automa(processed_string_val)
+            if isempty(parsed_coords_vec)
+                final_val_to_set =
+                    Nothing <: ftype_original ? nothing :
+                    (non_nothing_ftype <: AbstractVector ? non_nothing_ftype() : nothing)
+            elseif non_nothing_ftype <: Union{KML.Coord2,KML.Coord3}
+                if length(parsed_coords_vec) == 1
+                    final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec[1])
+                else
+                    @warn "Point field $true_field_name expected 1 coordinate, got $(length(parsed_coords_vec)). Assigning $(Nothing <: ftype_original ? "nothing" : "first if possible")."
+                    final_val_to_set =
+                        Nothing <: ftype_original ? nothing :
+                        (length(parsed_coords_vec) >= 1 ? convert(non_nothing_ftype, parsed_coords_vec[1]) : nothing)
+                end
+            elseif non_nothing_ftype <: AbstractVector # This is for scalar fields, so this might be an odd case unless it's for single SVector
+                final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec)
+            else
+                @warn "Unhandled type $non_nothing_ftype for coordinate field $true_field_name parsing '$processed_string_val'"
+                final_val_to_set = processed_string_val
             end
         else
-            @warn "Unhandled tag $fname for $(typeof(parent))"
+            @warn "Tag <$(child_xml_tag_str)> (field '$true_field_name') was string '$processed_string_val'. Unhandled conversion for $non_nothing_ftype (original: $ftype_original). Storing as String if field type allows."
+            if non_nothing_ftype === String || (Nothing <: ftype_original && non_nothing_ftype === String)
+                final_val_to_set = processed_string_val
+            elseif Nothing <: ftype_original
+                final_val_to_set = nothing
+                @warn "Could not parse '$processed_string_val' for optional field $true_field_name::$(ftype_original), setting to nothing."
+            else
+                error(
+                    "Cannot convert string '$processed_string_val' to required type $non_nothing_ftype for non-optional, non-string field $true_field_name.",
+                )
+            end
+        end
+    end
+    setfield!(parent, true_field_name, final_val_to_set)
+end
+
+# -----------------------------------------------------------------------------
+# Helper Function: Handling Polygon Boundaries
+# -----------------------------------------------------------------------------
+function _handle_polygon_boundary!(parent_polygon::KML.Polygon, boundary_xml_node::XML.Node, boundary_type_sym::Symbol)
+    # boundary_xml_node is <outerBoundaryIs> or <innerBoundaryIs>
+    # boundary_type_sym is :outerBoundaryIs or :innerBoundaryIs
+
+    element_children_of_boundary = [
+        c for c in XML.children(boundary_xml_node) if nodetype(c) === XML.Element # Or your XML.jl equivalent
+    ]
+
+    if boundary_type_sym === :outerBoundaryIs
+        if length(element_children_of_boundary) == 1
+            lr_xml_node = element_children_of_boundary[1]
+            if tagsym(XML.tag(lr_xml_node)) === :LinearRing
+                lr_kml_obj = object(lr_xml_node)
+                if lr_kml_obj isa KML.LinearRing
+                    setfield!(parent_polygon, :outerBoundaryIs, lr_kml_obj)
+                else
+                    @warn "<outerBoundaryIs> content <$(XML.tag(lr_xml_node))> did not parse to KML.LinearRing. Got: $(typeof(lr_kml_obj))"
+                end
+            else
+                @warn "<outerBoundaryIs> for Polygon expected <LinearRing> child, got <$(XML.tag(lr_xml_node))>"
+            end
+        else
+            @warn "<outerBoundaryIs> for Polygon did not contain exactly one element child. Found $(length(element_children_of_boundary)) elements: $([XML.tag(el) for el in element_children_of_boundary])"
+        end
+    elseif boundary_type_sym === :innerBoundaryIs # Lenient parsing for multiple LinearRings
+        if isempty(element_children_of_boundary)
+            @warn "<innerBoundaryIs> for Polygon contained no element children."
+        else
+            if getfield(parent_polygon, :innerBoundaryIs) === nothing
+                setfield!(parent_polygon, :innerBoundaryIs, KML.LinearRing[])
+            end
+            rings_processed_count = 0
+            for lr_xml_node in element_children_of_boundary
+                if tagsym(XML.tag(lr_xml_node)) === :LinearRing
+                    lr_kml_obj = object(lr_xml_node)
+                    if lr_kml_obj isa KML.LinearRing
+                        push!(getfield(parent_polygon, :innerBoundaryIs), lr_kml_obj)
+                        rings_processed_count += 1
+                    else
+                        @warn "Child <$(XML.tag(lr_xml_node))> of <innerBoundaryIs> did not parse to KML.LinearRing. Got: $(typeof(lr_kml_obj))"
+                    end
+                else
+                    @warn "<innerBoundaryIs> for Polygon contained unexpected element <$(XML.tag(lr_xml_node))>. Only <LinearRing> children are expected."
+                end
+            end
+            if length(element_children_of_boundary) > 1 && rings_processed_count > 0
+                @info "Leniently processed $rings_processed_count LinearRing(s) from a single <innerBoundaryIs> tag that contained $(length(element_children_of_boundary)) elements (KML standard expects one LinearRing per <innerBoundaryIs>)." maxlog =
+                    1
+            elseif rings_processed_count == 0 && !isempty(element_children_of_boundary)
+                @warn "No valid LinearRings were processed from <innerBoundaryIs> that had $(length(element_children_of_boundary)) element children: $([XML.tag(el) for el in element_children_of_boundary])"
+            elseif rings_processed_count != length(element_children_of_boundary)
+                @warn "Not all children of <innerBoundaryIs> were valid LinearRings. Processed $rings_processed_count of $(length(element_children_of_boundary)) elements."
+            end
         end
     end
 end
