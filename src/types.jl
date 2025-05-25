@@ -75,8 +75,20 @@ XML.children(o::KMLElement) = XML.children(Node(o))
 
 function typemap(::Type{T}) where {T<:KMLElement}
     get!(_FIELD_MAP_CACHE, T) do
-        Dict(fieldnames(T) .=> Base.nonnothingtype.(fieldtypes(T)))
+        field_names = fieldnames(T)
+        field_types = fieldtypes(T)
+        # Store both original type and its non-nothing version
+        Dict(
+            fn => Base.nonnothingtype(ft)
+            for (fn, ft) in zip(field_names, field_types)
+        )
     end
+end
+function fieldtype_info(::Type{T}, field::Symbol) where {T<:KMLElement}
+    return (
+        original = fieldtype(T, field),
+        nonnothingtype = typemap(T)[field]
+    )
 end
 function typemap(o::KMLElement)
     typemap(typeof(o))
@@ -863,6 +875,15 @@ function _collect_concrete!(root)
     end
 end
 _collect_concrete!(KMLElement)
+TAG_TO_TYPE[:kml] = KMLFile
+TAG_TO_TYPE[:Placemark] = Placemark
+TAG_TO_TYPE[:Point] = Point
+TAG_TO_TYPE[:Polygon] = Polygon
+TAG_TO_TYPE[:LineString] = LineString
+TAG_TO_TYPE[:LinearRing] = LinearRing
+TAG_TO_TYPE[:Style] = Style
+TAG_TO_TYPE[:Document] = Document
+TAG_TO_TYPE[:Folder] = Folder
 # Manually map aliases for hotSpot to improve performance
 TAG_TO_TYPE[:overlayXY] = KML.hotSpot
 TAG_TO_TYPE[:screenXY] = KML.hotSpot

@@ -483,15 +483,28 @@ function _assign_complex_kml_object!(
 )
     T_child_obj = typeof(child_kml_object)
     assigned = false
-    for (field_name_sym, field_type_in_parent) in typemap(parent)
-        if T_child_obj <: field_type_in_parent
+
+    # Get the parent type
+    parent_type = typeof(parent)
+
+    # Iterate through fieldnames and get types
+    for field_name_sym in fieldnames(parent_type)
+        # Get original field type for compatibility checks
+        field_type_in_parent = fieldtype(parent_type, field_name_sym)
+
+        # Use the non-nothing type for the actual comparison
+        # since typemap stores non-nothing types
+        non_nothing_field_type = typemap(parent_type)[field_name_sym]
+
+        if T_child_obj <: non_nothing_field_type
             setfield!(parent, field_name_sym, child_kml_object)
             assigned = true
             break
-        elseif field_type_in_parent <: AbstractVector && T_child_obj <: eltype(field_type_in_parent)
+        elseif non_nothing_field_type <: AbstractVector && T_child_obj <: eltype(non_nothing_field_type)
             vec = getfield(parent, field_name_sym)
             if vec === nothing
-                setfield!(parent, field_name_sym, eltype(field_type_in_parent)[])
+                # Use the element type of the non-nothing field type
+                setfield!(parent, field_name_sym, eltype(non_nothing_field_type)[])
                 vec = getfield(parent, field_name_sym)
             end
             push!(vec, child_kml_object)
@@ -499,6 +512,7 @@ function _assign_complex_kml_object!(
             break
         end
     end
+
     if !assigned
         @warn "Parsed KML object of type $(T_child_obj) (from tag <$(child_xml_tag_str)>) could not be assigned to any compatible field in parent $(typeof(parent)). Review type definitions."
     end
@@ -526,15 +540,14 @@ function _convert_and_set_simple_field!(
     end
 
     if !hasfield(typeof(parent), true_field_name)
-        @warn "Tag <$(child_xml_tag_str)> resolved by object() to String '$(raw_text_from_kml)', but no field named '$field_name_sym' (or mapped '$true_field_name') exists in parent of type $(typeof(parent))." [
-            cite:190,
-            384,
-            500,
-        ]
+        @warn "Tag <$(child_xml_tag_str)> resolved by object() to String '$(raw_text_from_kml)', but no field named '$field_name_sym' (or mapped '$true_field_name') exists in parent of type $(typeof(parent))."
         return
     end
 
+    # Get both original and non-nothing types efficiently
     ftype_original = fieldtype(typeof(parent), true_field_name)
+    non_nothing_ftype = typemap(typeof(parent))[true_field_name]  # Already cached!
+
     processed_string_val = String(raw_text_from_kml)
 
     # Handle empty string for optional fields at the top level
@@ -543,40 +556,34 @@ function _convert_and_set_simple_field!(
         return
     end
 
-    # Dispatch to vector or scalar handler
-    # Base.nonnothingtype is used because ftype_original could be Union{Nothing, Vector{...}} or Union{Nothing, ScalarType}
-    non_nothing_ftype = Base.nonnothingtype(ftype_original)
-
+    # Dispatch based on field type
     if true_field_name === :coordinates || true_field_name === :gx_coord
-        parsed_coords_vec = _parse_coordinates_automa(processed_string_val) # 
+        parsed_coords_vec = _parse_coordinates_automa(processed_string_val)
         final_val_to_set = nothing
         if isempty(parsed_coords_vec)
             final_val_to_set =
-                Nothing <: ftype_original ? nothing : (non_nothing_ftype <: AbstractVector ? non_nothing_ftype() : nothing) # 
+                Nothing <: ftype_original ? nothing : (non_nothing_ftype <: AbstractVector ? non_nothing_ftype() : nothing)
         elseif non_nothing_ftype <: Union{KML.Coord2,KML.Coord3} # For Point.coordinates
             if length(parsed_coords_vec) == 1
-                final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec[1]) # 
+                final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec[1])
             else
-                @warn "Point field $true_field_name expected 1 coordinate, got $(length(parsed_coords_vec)). Assigning $(Nothing <: ftype_original ? "nothing" : "first if possible")." # 
+                @warn "Point field $true_field_name expected 1 coordinate, got $(length(parsed_coords_vec)). Assigning $(Nothing <: ftype_original ? "nothing" : "first if possible")."
                 final_val_to_set =
                     Nothing <: ftype_original ? nothing :
-                    (length(parsed_coords_vec) >= 1 ? convert(non_nothing_ftype, parsed_coords_vec[1]) : nothing) # 
+                    (length(parsed_coords_vec) >= 1 ? convert(non_nothing_ftype, parsed_coords_vec[1]) : nothing)
             end
         elseif non_nothing_ftype <: AbstractVector # For LineString.coordinates, LinearRing.coordinates etc.
-            final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec) # 
+            final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec)
         else
-            @warn "Unhandled type $non_nothing_ftype for coordinate field $true_field_name parsing '$processed_string_val'" # 
+            @warn "Unhandled type $non_nothing_ftype for coordinate field $true_field_name parsing '$processed_string_val'"
             final_val_to_set = processed_string_val # Fallback
         end
         setfield!(parent, true_field_name, final_val_to_set)
         return # Coordinates handled
 
     # Dispatch to vector or scalar handler for other simple types
-    elseif non_nothing_ftype <: AbstractVector && let el_type = eltype(non_nothing_ftype) # Check element type of the vector
-        # Ensure this logic correctly identifies vectors of simple, non-KMLElement types
-        # Example: true if el_type is String, Int, or the TimeUnion.
-        # This was the previous condition: !(el_type <: KML.KMLElement)
-        # A more specific check might be better:
+    elseif non_nothing_ftype <: AbstractVector && let el_type = eltype(non_nothing_ftype)
+        # Check element type of the vector
         Base.nonnothingtype(el_type) === String ||
             Base.nonnothingtype(el_type) <: Integer ||
             Base.nonnothingtype(el_type) <: AbstractFloat ||
@@ -629,7 +636,6 @@ function _parse_and_append_to_simple_vector!(
     parsed_element_val = nothing
 
     # Handle empty string for an element if the element type itself can be Nothing
-    # (This check is also at the top of _convert_and_set_simple_field!, but specific to element here)
     if isempty(processed_string_val) && Nothing <: el_type_original
         parsed_element_val = nothing
         # TimePrimitive Union handling for vector elements
@@ -679,7 +685,7 @@ function _parse_and_append_to_simple_vector!(
     current_vector = getfield(parent, true_field_name)
     if current_vector === nothing
         # Initialize with an empty vector. The eltype of `vec_type` is `el_type_original`.
-        new_empty_vector = el_type_original[] # This creates Vector{UnionProperty{Nothing, ZonedDateTime, Date, String}} for instance
+        new_empty_vector = el_type_original[] # This creates Vector{Union{Nothing, ZonedDateTime, Date, String}} for instance
         setfield!(parent, true_field_name, new_empty_vector)
         current_vector = new_empty_vector
     end
@@ -691,7 +697,6 @@ function _parse_and_append_to_simple_vector!(
         @warn "Could not push unparsed non-empty value '$processed_string_val' into vector for $true_field_name as element type $el_type_original does not allow it or parsing failed."
     end
 end
-
 
 # -----------------------------------------------------------------------------
 # Helper Function: Parse and Set a Scalar Simple Field
@@ -845,12 +850,10 @@ function _handle_polygon_boundary!(parent_polygon::KML.Polygon, boundary_xml_nod
 end
 
 const _TAGSYM_CACHE = Dict{String,Symbol}()
+const _COLON_TO_UNDERSCORE = r":" => "_"
 function tagsym(x::String)
-    # Use get! to look up the string in the cache.
-    # If not found, compute it (replace ':' and convert to Symbol),
-    # store it in the cache, and then return it.
     get!(_TAGSYM_CACHE, x) do
-        Symbol(replace(x, ':' => '_'))
+        Symbol(replace(x, _COLON_TO_UNDERSCORE))
     end
 end
 tagsym(x::Node) = tagsym(XML.tag(x))
