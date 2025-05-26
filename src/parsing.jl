@@ -1,5 +1,5 @@
 # turn an XML.Node into a KMLFile by finding the <kml> element
-function KMLFile(doc::XML.Node)
+function KMLFile(doc::XML.AbstractXMLNode)
     i = findfirst(x -> x.tag == "kml", XML.children(doc))
     isnothing(i) && error("No <kml> tag found in file.")
     KML.KMLFile(map(KML.object, XML.children(doc[i])))
@@ -9,7 +9,7 @@ end
 #  I/O glue: read/write KMLFile via XML
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helper: pull the <kml> element out of an XML.Document node
-function _parse_kmlfile(doc::XML.Node)
+function _parse_kmlfile(doc::XML.AbstractXMLNode)
     i = findfirst(x -> x.tag == "kml", XML.children(doc))
     isnothing(i) && error("No <kml> tag found in file.")
     xml_children = XML.children(doc[i])
@@ -22,7 +22,7 @@ end
 
 # Read from any IO stream
 function Base.read(io::IO, ::Type{KMLFile})
-    doc = xmlread(io, Node)        # parse into XML.Node
+    doc = xmlread(io, LazyNode)        # parse into XML.Node ou XML.LazyNode
     _parse_kmlfile(doc)
 end
 
@@ -130,7 +130,7 @@ end
 const ENUM_NAMES_SET = Set(names(Enums; all = true))             # Get all names in Enums
 
 # Fast object()  – deal with the handful of tags we care about
-function object(node::XML.Node)
+function object(node::XML.AbstractXMLNode)
     # Assuming 'node' is always an XML.Element when object() is called for KML types
     sym = tagsym(XML.tag(node))
 
@@ -146,9 +146,10 @@ function object(node::XML.Node)
         add_attributes!(o, node) # Assumes add_attributes! correctly uses XML.attributes(node)
 
         if T === Snippet || T === SimpleData # Add KML.SimpleData here
+            node_children = XML.children(node)
             if hasfield(T, :content) && fieldtype(T, :content) === String
                 text_parts = String[]
-                for child_node_val in XML.children(node) # Iterate children of <Snippet> or <SimpleData>
+                for child_node_val in node_children # Iterate children of <Snippet> or <SimpleData>
                     if nodetype(child_node_val) === XML.Text || nodetype(child_node_val) === XML.CData # Corrected
                         push!(text_parts, XML.value(child_node_val))
                     elseif nodetype(child_node_val) === XML.Element && T === KML.Snippet
@@ -160,7 +161,7 @@ function object(node::XML.Node)
             end
             # If Snippet/SimpleData have other fields defined as KML elements (unlikely for SimpleData)
             if T === KML.Snippet # Or more generally, if T can have other element children for other fields
-                for child_element_node in XML.children(node)
+                for child_element_node in node_children
                     if nodetype(child_element_node) === XML.Element
                         # Avoid re-processing if content was formed from these elements above,
                         # this loop is for distinct other fields of Snippet if any.
@@ -210,7 +211,7 @@ end
 
 const KML_NAMES_SET = Set(names(KML; all = true, imported = true)) # Get all names in KML
 
-function _object_slow(node::XML.Node)
+function _object_slow(node::XML.AbstractXMLNode)
     original_tag_name = XML.tag(node)
     sym = tagsym(original_tag_name) # Convert "namespace:tag" to :namespace_tag or :tag
 
@@ -366,6 +367,7 @@ Parse a KML/GeoRSS-style coordinate string and return a vector of
 """
 function _parse_coordinates_automa(txt::AbstractString)
     parsed_floats = Float64[]
+    # sizehint!(parsed_floats, length(txt) ÷ 4)
     # sizehint! does not bring any speedup here
     final_state = __core_automa_parser(codeunits(txt), parsed_floats)
 
@@ -413,7 +415,7 @@ end
 # -----------------------------------------------------------------------------
 # Main add_element! function (now much shorter)
 # -----------------------------------------------------------------------------
-function add_element!(parent::Union{KML.Object,KML.KMLElement}, child_xml_node::XML.Node)
+function add_element!(parent::Union{KML.Object,KML.KMLElement}, child_xml_node::XML.AbstractXMLNode)
     child_parsed_val = object(child_xml_node) # Returns KML.KMLElement, String, or nothing
 
     if child_parsed_val isa KML.KMLElement
@@ -792,7 +794,7 @@ end
 # -----------------------------------------------------------------------------
 # Helper Function: Handling Polygon Boundaries
 # -----------------------------------------------------------------------------
-function _handle_polygon_boundary!(parent_polygon::KML.Polygon, boundary_xml_node::XML.Node, boundary_type_sym::Symbol)
+function _handle_polygon_boundary!(parent_polygon::KML.Polygon, boundary_xml_node::XML.AbstractXMLNode, boundary_type_sym::Symbol)
     # boundary_xml_node is <outerBoundaryIs> or <innerBoundaryIs>
     # boundary_type_sym is :outerBoundaryIs or :innerBoundaryIs
 
@@ -856,9 +858,9 @@ function tagsym(x::String)
         Symbol(replace(x, _COLON_TO_UNDERSCORE))
     end
 end
-tagsym(x::Node) = tagsym(XML.tag(x))
+tagsym(x::XML.AbstractXMLNode) = tagsym(XML.tag(x))
 
-function add_attributes!(o::Union{Object,KMLElement}, source::Node)
+function add_attributes!(o::Union{Object,KMLElement}, source::XML.AbstractXMLNode)
     attr = XML.attributes(source)
     isnothing(attr) && return
 

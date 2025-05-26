@@ -2,7 +2,7 @@ module KML
 
 # ─── base deps ────────────────────────────────────────────────────────────────
 using OrderedCollections: OrderedDict
-import XML: XML, read as xmlread, parse as xmlparse, write as xmlwrite, Node, nodetype # xml parsing / writing
+import XML: XML, read as xmlread, parse as xmlparse, write as xmlwrite, Node, LazyNode, nodetype # xml parsing / writing
 using InteractiveUtils: subtypes    # all subtypes of a type
 using StaticArrays                  # small fixed‑size coordinate vectors
 using Automa, Parsers               # for coordinates parsing
