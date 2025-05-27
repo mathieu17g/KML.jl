@@ -22,21 +22,81 @@ function _parse_kmlfile(doc::XML.AbstractXMLNode)
     KMLFile(kml_children)
 end
 
-# Read from any IO stream
-function Base.read(io::IO, ::Type{KMLFile}; lazy = true)
-    node_type = lazy ? LazyNode : Node
-    return xmlread(io, node_type) |> _parse_kmlfile
-end
+# ──────────────────────────────────────────────────────────────────────────────
+#  KMx File Types
+# ──────────────────────────────────────────────────────────────────────────────
 
 abstract type KMxFileType end # Abstract type for KML/KMZ dispatch
 struct KML_KMxFileType <: KMxFileType end # Marker for .kml files
 struct KMZ_KMxFileType <: KMxFileType end # Marker for .kmz files
 
-# Read from a filename
-function _read_file_from_path(::KML_KMxFileType, path::AbstractString; lazy = true)
-    node_type = lazy ? LazyNode : Node
-    return xmlread(path, node_type) |> _parse_kmlfile
+# ──────────────────────────────────────────────────────────────────────────────
+#  KMLFile reading - materializes all KML objects
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Read from any IO stream
+function Base.read(io::IO, ::Type{KMLFile})
+    # Always use Node for regular KMLFile since we're materializing everything anyway
+    return xmlread(io, Node) |> _parse_kmlfile
 end
+
+# Modify _read_file_from_path (around line 23)
+function _read_file_from_path(::KML_KMxFileType, path::AbstractString)
+    return xmlread(path, Node) |> _parse_kmlfile
+end
+
+# Modify the file read method (around line 47)
+function Base.read(path::AbstractString, ::Type{KMLFile})
+    file_ext = lowercase(splitext(path)[2])
+    if file_ext == ".kmz"
+        return _read_file_from_path(KMZ_KMxFileType(), path)
+    elseif file_ext == ".kml"
+        return _read_file_from_path(KML_KMxFileType(), path)
+    else
+        error("Unsupported file extension: $file_ext. Only .kml and .kmz are supported.")
+    end
+end
+
+# Modify parse method (around line 59)
+Base.parse(::Type{KMLFile}, s::AbstractString) = _parse_kmlfile(xmlparse(s, Node))
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  LazyKMLFile reading - just store the XML without materializing KML objects
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Read LazyKMLFile from IO stream
+function Base.read(io::IO, ::Type{LazyKMLFile})
+    doc = xmlread(io, LazyNode)  # Always use LazyNode for LazyKMLFile
+    return LazyKMLFile(doc)
+end
+
+# Read LazyKMLFile from file path
+function Base.read(path::AbstractString, ::Type{LazyKMLFile})
+    file_ext = lowercase(splitext(path)[2])
+    if file_ext == ".kmz"
+        # For KMZ files, we'll need to extract and read the doc.kml
+        # This will delegate to the extension if available
+        return _read_lazy_file_from_path(KMZ_KMxFileType(), path)
+    elseif file_ext == ".kml"
+        doc = xmlread(path, LazyNode)
+        return LazyKMLFile(doc)
+    else
+        error("Unsupported file extension: $file_ext. Only .kml and .kmz are supported.")
+    end
+end
+
+# Helper for KMZ files (will be handled by extension)
+function _read_lazy_file_from_path(::KML_KMxFileType, path::AbstractString)
+    doc = xmlread(path, LazyNode)
+    return LazyKMLFile(doc)
+end
+
+# Parse LazyKMLFile from string
+Base.parse(::Type{LazyKMLFile}, s::AbstractString) = LazyKMLFile(xmlparse(s, LazyNode))
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  KMZ reading error hinter
+# ─────────────────────────────────────────────────────────────────────────────
 
 function _read_kmz_file_from_path_error_hinter(io, exc, argtypes, kwargs)
     if isnothing(Base.get_extension(KML, :KMLZipArchivesExt)) &&
@@ -61,20 +121,6 @@ function _read_kmz_file_from_path_error_hinter(io, exc, argtypes, kwargs)
         )
     end
 end
-
-function Base.read(path::AbstractString, ::Type{KMLFile}; lazy = true)
-    file_ext = lowercase(splitext(path)[2])
-    if file_ext == ".kmz"
-        return _read_file_from_path(KMZ_KMxFileType(), path; lazy = lazy) # Dispatch for KMZ
-    elseif file_ext == ".kml"
-        return _read_file_from_path(KML_KMxFileType(), path; lazy = lazy) # Dispatch for KML
-    else
-        error("Unsupported file extension: $file_ext. Only .kml and .kmz are supported.")
-    end
-end
-
-# Parse from an in-memory string
-Base.parse(::Type{KMLFile}, s::AbstractString; lazy = true) = _parse_kmlfile(xmlparse(s, lazy ? LazyNode : Node))
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  write back out (XML.write) for any of our core types

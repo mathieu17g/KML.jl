@@ -227,6 +227,65 @@ end
 
 Base.:(==)(a::KMLFile, b::KMLFile) = all(getfield(a, f) == getfield(b, f) for f in fieldnames(KMLFile))
 
+# ─── LazyKMLFile for efficient DataFrame extraction ─────────────────────────
+"""
+    LazyKMLFile
+
+A lazy representation of a KML file that keeps the XML structure without
+materializing KML objects. Optimized for extracting specific layers to DataFrames.
+
+# Fields
+
+  - `root_node::XML.AbstractXMLNode`: The root XML document node
+  - `_layer_cache::Dict{String,Any}`: Cache for accessed layers to avoid re-parsing
+  - `_layer_info_cache::Union{Nothing,Vector{Tuple{Int,String,Any}}}`: Cached layer information
+"""
+mutable struct LazyKMLFile
+    root_node::XML.AbstractXMLNode
+    _layer_cache::Dict{String,Any}
+    _layer_info_cache::Union{Nothing,Vector{Tuple{Int,String,Any}}}
+
+    # Constructor
+    LazyKMLFile(root_node::XML.AbstractXMLNode) = new(root_node, Dict{String,Any}(), nothing)
+end
+
+# Basic methods for LazyKMLFile
+function Base.show(io::IO, k::LazyKMLFile)
+    print(io, "LazyKMLFile ")
+    printstyled(io, "(lazy, ", Base.format_bytes(Base.summarysize(k.root_node)), ')'; color = :light_black)
+end
+
+Base.:(==)(a::LazyKMLFile, b::LazyKMLFile) = a.root_node == b.root_node
+
+# Helper to check if a LazyKMLFile has been partially materialized
+function is_cached(k::LazyKMLFile, key::String)
+    haskey(k._layer_cache, key)
+end
+
+# Helper to get cached layer
+function get_cached_layer(k::LazyKMLFile, key::String)
+    get(k._layer_cache, key, nothing)
+end
+
+# Helper to cache a layer
+function cache_layer!(k::LazyKMLFile, key::String, value)
+    k._layer_cache[key] = value
+    value
+end
+
+# Convert LazyKMLFile to regular KMLFile (materializes everything)
+"""
+    KMLFile(lazy::LazyKMLFile)
+
+Convert a LazyKMLFile to a regular KMLFile, materializing all KML objects.
+"""
+function KMLFile(lazy::LazyKMLFile)
+    _parse_kmlfile(lazy.root_node)
+end
+
+# Also provide as a convert method
+Base.convert(::Type{KMLFile}, lazy::LazyKMLFile) = KMLFile(lazy)
+
 #──────────────────────────────────────────────────────────────────────────────
 #  OBJECT / FEATURE HIERARCHY
 #  (everything that represents real KML elements – but *no* GeoInterface)
