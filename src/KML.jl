@@ -16,8 +16,8 @@ include("tables.jl")            # Tables.jl wrapper for Placemarks
 using .TablesBridge             # re‑export ?
 
 # ─── re‑export public names ──────────────────────────────────────────────────
-export KMLFile, Enums, object   # the “root” objects most users need
-export unwrap_single_part_multigeometry # utility function
+export KMLFile, LazyKMLFile, Enums, object   # the "root" objects most users need
+export unwrap_single_part_multigeometry       # utility function
 export PlacemarkTable, list_layers, get_layer_names, get_num_layers
 
 for T in vcat(
