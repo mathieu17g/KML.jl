@@ -78,17 +78,11 @@ function typemap(::Type{T}) where {T<:KMLElement}
         field_names = fieldnames(T)
         field_types = fieldtypes(T)
         # Store both original type and its non-nothing version
-        Dict(
-            fn => Base.nonnothingtype(ft)
-            for (fn, ft) in zip(field_names, field_types)
-        )
+        Dict(fn => Base.nonnothingtype(ft) for (fn, ft) in zip(field_names, field_types))
     end
 end
 function fieldtype_info(::Type{T}, field::Symbol) where {T<:KMLElement}
-    return (
-        original = fieldtype(T, field),
-        nonnothingtype = typemap(T)[field]
-    )
+    return (original = fieldtype(T, field), nonnothingtype = typemap(T)[field])
 end
 function typemap(o::KMLElement)
     typemap(typeof(o))
@@ -196,10 +190,10 @@ end # module Enums
 
 # ─── KMLFile + core object hierarchy (NO GeoInterface code) ──────────────────
 mutable struct KMLFile
-    children::Vector{Union{Node,KMLElement}}
+    children::Vector{Union{XML.AbstractXMLNode,KMLElement}}
 end
 KMLFile(content::KMLElement...) = KMLFile(collect(content))
-Base.push!(k::KMLFile, x::Union{Node,KMLElement}) = push!(k.children, x)
+Base.push!(k::KMLFile, x::Union{XML.AbstractXMLNode,KMLElement}) = push!(k.children, x)
 
 function Base.show(io::IO, k::KMLFile)
     print(io, "KMLFile ")
@@ -207,6 +201,18 @@ function Base.show(io::IO, k::KMLFile)
 end
 
 function Node(k::KMLFile)
+    # Convert any AbstractXMLNodes to Nodes when serializing
+    # KMLElements already have their Node() method defined
+    children = map(k.children) do child
+        if child isa XML.AbstractXMLNode && !(child isa Node)
+            Node(child)  # Convert LazyNode or other XML nodes to Node
+        elseif child isa KMLElement
+            Node(child)  # Use existing Node(::KMLElement) method
+        else
+            child  # Already a Node
+        end
+    end
+
     Node(
         XML.Document,
         nothing,
@@ -214,7 +220,7 @@ function Node(k::KMLFile)
         nothing,
         [
             Node(XML.Declaration, nothing, OrderedDict("version" => "1.0", "encoding" => "UTF-8")),
-            Node(XML.Element, "kml", OrderedDict("xmlns" => "http://earth.google.com/kml/2.2"), nothing, Node.(k.children)),
+            Node(XML.Element, "kml", OrderedDict("xmlns" => "http://earth.google.com/kml/2.2"), nothing, children),
         ],
     )
 end
@@ -269,14 +275,14 @@ const size = hotSpot # KML <size> for ScreenOverlay has x, y, xunits, yunits, ma
 #────────────────────────  TIME ELEMENTS  ────────────────────────────────
 Base.@kwdef mutable struct TimeStamp <: TimePrimitive
     @object
-    @option when ::Union{TimeZones.ZonedDateTime, Dates.Date, String}
+    @option when ::Union{TimeZones.ZonedDateTime,Dates.Date,String}
 end
 TAG_TO_TYPE[:TimeStamp] = TimeStamp
 
 Base.@kwdef mutable struct TimeSpan <: TimePrimitive
     @object
-    @option begin_ ::Union{TimeZones.ZonedDateTime, Dates.Date, String}
-    @option end_ ::Union{TimeZones.ZonedDateTime, Dates.Date, String}
+    @option begin_ ::Union{TimeZones.ZonedDateTime,Dates.Date,String}
+    @option end_ ::Union{TimeZones.ZonedDateTime,Dates.Date,String}
 end
 TAG_TO_TYPE[:TimeSpan] = TimeSpan
 
@@ -306,8 +312,8 @@ Base.@kwdef mutable struct Icon <: Object
     @option viewBoundScale ::Float64
     @option viewFormat ::String
     @option httpQuery ::String
-    @option x ::Int   
-    @option y ::Int  
+    @option x ::Int
+    @option y ::Int
     @option w ::Int  # Width in pixels if the <href> specifies an icon palette
     @option h ::Int  # Height in pixels if the <href> specifies an icon palette
 end
@@ -573,7 +579,7 @@ Base.@kwdef mutable struct Data <: KMLElement{(:name,)} # 'name' is an attribute
     # name::String is implicitly handled by KMLElement{(:name,)} if required as an attribute
     # If 'name' is a required attribute, it should be a regular field:
     # name::String -> This will be handled by add_attributes!
-    
+
     @option value ::String          # From <value> child tag
     @option displayName ::String    # From <displayName> child tag
 end
@@ -604,7 +610,7 @@ Base.@kwdef mutable struct ExtendedData <: NoAttributes # Or KMLElement{()}
     # Use a Union to allow specific types and a fallback for other XML.
     # Node can be used to store unparsed/untyped XML elements.
     # If you only want to store recognized KML elements, replace Node with a more specific KMLElement.
-    @option children ::Vector{Union{Data, SchemaData, KMLElement, Node}}
+    @option children ::Vector{Union{Data,SchemaData,KMLElement,Node}}
     # Using KMLElement allows any other KML types you've defined to also be children if valid.
     # Using Node allows for truly arbitrary XML from other namespaces.
     # If you expect only Data and SchemaData, it would be Vector{Union{Data, SchemaData}}.
@@ -650,7 +656,7 @@ Base.@kwdef mutable struct Update <: KMLElement{()} # KML spec shows no attribut
     # targetHref is a child element of <Update>
     @option targetHref ::String
     # Create, Delete, Change operations
-    @option operations ::Vector{Union{Create, Delete, Change}}
+    @option operations ::Vector{Union{Create,Delete,Change}}
 end
 TAG_TO_TYPE[:Update] = Update # Add Update itself to TAG_TO_TYPE
 
@@ -739,13 +745,13 @@ TAG_TO_TYPE[:atom_link] = AtomLink # Manual mapping for namespaced tag
     @option StyleSelectors ::Vector{StyleSelector}
     @option Region ::Region
     @option ExtendedData ::ExtendedData
-    
+
     # --- Google Extension (gx:) Fields for Features ---
     @altitude_mode_elements # This brings in gx_altitudeMode if it's not already there
     @option gx_balloonVisibility ::Bool
     # Add others that are simple children of Feature types:
     # @option gx_snippet ::String  // If there's a gx version of Snippet (less common for Feature directly)
-    
+
     # Note: More complex gx types like gx:Tour, gx:Track, gx:MultiTrack are usually defined
     # as separate KMLElement structs and added via TAG_TO_TYPE, then become fields
     # where appropriate (e.g. gx_Playlist might have gx_TourPrimitives which include gx:Track).
@@ -772,7 +778,7 @@ end
 Base.@kwdef mutable struct gx_Track <: Geometry
     @object
     @altitude_mode_elements
-    @option when ::Vector{Union{TimeZones.ZonedDateTime, Dates.Date, String}}
+    @option when ::Vector{Union{TimeZones.ZonedDateTime,Dates.Date,String}}
     @option gx_coord ::Union{Vector{Coord2},Vector{Coord3}}
     @option gx_angles ::String # gx:angles is a space-separated string of 3 tuples usually
     @option Model ::Model
