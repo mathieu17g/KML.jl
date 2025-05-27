@@ -45,9 +45,9 @@ function _read_file_from_path(::KML_KMxFileType, path::AbstractString)
 end
 
 # Placeholder for KMZ - will be implemented by the extension
-function _read_file_from_path(::KMZ_KMxFileType, path::AbstractString)
-    error("KMZ support requires the KMLZipArchivesExt extension. Please load ZipArchives.jl first.")
-end
+# function _read_file_from_path(::KMZ_KMxFileType, path::AbstractString)
+#     error("KMZ support requires the KMLZipArchivesExt extension. Please load ZipArchives.jl first.")
+# end
 
 # Read from KML or KMZ file path
 function Base.read(path::AbstractString, ::Type{KMLFile})
@@ -80,9 +80,9 @@ function _read_lazy_file_from_path(::KML_KMxFileType, path::AbstractString)
 end
 
 # Placeholder for KMZ - will be implemented by the extension
-function _read_lazy_file_from_path(::KMZ_KMxFileType, path::AbstractString)
-    error("KMZ support for LazyKMLFile requires the KMLZipArchivesExt extension. Please load ZipArchives.jl first.")
-end
+# function _read_lazy_file_from_path(::KMZ_KMxFileType, path::AbstractString)
+#     error("KMZ support for LazyKMLFile requires the KMLZipArchivesExt extension. Please load ZipArchives.jl first.")
+# end
 
 # Read LazyKMLFile from file path
 function Base.read(path::AbstractString, ::Type{LazyKMLFile})

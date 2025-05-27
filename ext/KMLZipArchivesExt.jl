@@ -1,5 +1,7 @@
 module KMLZipArchivesExt
 
+# __precompile__(false)
+
 using ZipArchives
 import KML
 import KML: KMZ_KMxFileType, xmlread, _parse_kmlfile, KMLFile, LazyKMLFile, Node, LazyNode
