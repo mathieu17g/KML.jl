@@ -10,12 +10,14 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helper: pull the <kml> element out of an XML.Document node
 function _parse_kmlfile(doc::XML.AbstractXMLNode)
-    i = findfirst(x -> x.tag == "kml", XML.children(doc))
+    doc_children = XML.children(doc)
+    i = findfirst(x -> x.tag == "kml", doc_children)
     isnothing(i) && error("No <kml> tag found in file.")
-    xml_children = XML.children(doc[i])
-    kml_children = Vector{Union{Node,KMLElement}}(undef, length(xml_children)) # Preallocate
+    kml_element = doc_children[i]
+    xml_children = XML.children(kml_element)
+    kml_children = Vector{Union{Node,KMLElement}}(undef, length(xml_children))
     for (idx, child_node) in enumerate(xml_children)
-        kml_children[idx] = object(child_node) # Populate
+        kml_children[idx] = object(child_node)
     end
     KMLFile(kml_children)
 end
@@ -144,9 +146,9 @@ function object(node::XML.AbstractXMLNode)
         T = TAG_TO_TYPE[sym]
         o = T()
         add_attributes!(o, node) # Assumes add_attributes! correctly uses XML.attributes(node)
+        node_children = XML.children(node)
 
         if T === Snippet || T === SimpleData # Add KML.SimpleData here
-            node_children = XML.children(node)
             if hasfield(T, :content) && fieldtype(T, :content) === String
                 text_parts = String[]
                 for child_node_val in node_children # Iterate children of <Snippet> or <SimpleData>
@@ -173,7 +175,7 @@ function object(node::XML.AbstractXMLNode)
             # If they could, the generic loop below would be needed, but filtered.
         else
             # Generic parsing of *child ELEMENTS* for all other KMLElement types
-            for child_element_node in XML.children(node)
+            for child_element_node in node_children
                 if nodetype(child_element_node) === XML.Element
                     add_element!(o, child_element_node)
                 end
@@ -416,62 +418,50 @@ end
 # Main add_element! function (now much shorter)
 # -----------------------------------------------------------------------------
 function add_element!(parent::Union{KML.Object,KML.KMLElement}, child_xml_node::XML.AbstractXMLNode)
-    child_parsed_val = object(child_xml_node) # Returns KML.KMLElement, String, or nothing
+    child_parsed_val = object(child_xml_node)
 
     if child_parsed_val isa KML.KMLElement
         _assign_complex_kml_object!(parent, child_parsed_val, XML.tag(child_xml_node))
         return
     elseif child_parsed_val isa String
-        # object() parsed child_xml_node into a simple String value.
-        # The tag name of child_xml_node itself is the field in 'parent'.
         field_name_sym = tagsym(XML.tag(child_xml_node))
         _convert_and_set_simple_field!(parent, field_name_sym, child_parsed_val, XML.tag(child_xml_node))
         return
-    else # child_parsed_val is nothing (or unexpected type)
-        # This means child_xml_node is structural, a simple field that object() didn't pre-parse to string,
-        # or an unhandled tag.
-        field_name_sym = tagsym(XML.tag(child_xml_node)) # child_xml_node is, e.g., <description>
+    else
+        field_name_sym = tagsym(XML.tag(child_xml_node))
 
         if parent isa KML.Polygon && (field_name_sym === :outerBoundaryIs || field_name_sym === :innerBoundaryIs)
             _handle_polygon_boundary!(parent, child_xml_node, field_name_sym)
             return
         end
 
-        # Check if the parent expects a String for this field name.
-        # This should catch <description>, <text> in BalloonStyle, etc.
         if hasfield(typeof(parent), field_name_sym) &&
            Base.nonnothingtype(fieldtype(typeof(parent), field_name_sym)) === String
 
-            # Aggressively get all inner content as a string, including serializing child HTML elements.
+            child_children = XML.children(child_xml_node)
+
             buffer = IOBuffer()
-            for content_child_node in XML.children(child_xml_node) # Iterate children of <description>
-                # XML.jl's print method for Node should serialize it back to XML string form
+            for content_child_node in child_children
                 print(buffer, content_child_node)
             end
             text_content_for_field = String(strip(String(take!(buffer))))
 
-            # If the tag was truly empty (e.g., <description/>), children might be empty.
-            if isempty(XML.children(child_xml_node)) && isempty(text_content_for_field)
+            if isempty(child_children) && isempty(text_content_for_field)
                 text_content_for_field = ""
             end
 
-            # Call _convert_and_set_simple_field!, which will just assign the string
-            # as the target type is String.
             _convert_and_set_simple_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node))
             return
 
-            # Fallback for other simple fields (if XML.is_simple is true and it wasn't a String field above)
         elseif XML.is_simple(child_xml_node) && hasfield(typeof(parent), field_name_sym)
-            # child_xml_node has no attributes and exactly one Text or CData child.
-            single_child = only(XML.children(child_xml_node)) # Known to be Text or CData
+            child_children = XML.children(child_xml_node)
+            single_child = only(child_children)
             text_content_for_field = String(XML.value(single_child))
-
             _convert_and_set_simple_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node))
             return
         end
 
-        # If still unhandled
-        @warn "Unhandled tag $field_name_sym (from XML <$(XML.tag(child_xml_node))>) for parent $(typeof(parent)). `object()` returned `nothing`, and it wasn't a recognized simple field or handled structural tag."
+        @warn "Unhandled tag $field_name_sym (from XML <$(XML.tag(child_xml_node))>) for parent $(typeof(parent))"
     end
 end
 
@@ -794,13 +784,19 @@ end
 # -----------------------------------------------------------------------------
 # Helper Function: Handling Polygon Boundaries
 # -----------------------------------------------------------------------------
-function _handle_polygon_boundary!(parent_polygon::KML.Polygon, boundary_xml_node::XML.AbstractXMLNode, boundary_type_sym::Symbol)
-    # boundary_xml_node is <outerBoundaryIs> or <innerBoundaryIs>
-    # boundary_type_sym is :outerBoundaryIs or :innerBoundaryIs
+function _handle_polygon_boundary!(
+    parent_polygon::KML.Polygon,
+    boundary_xml_node::XML.AbstractXMLNode,
+    boundary_type_sym::Symbol,
+)
+    boundary_children = XML.children(boundary_xml_node)
 
-    element_children_of_boundary = [
-        c for c in XML.children(boundary_xml_node) if nodetype(c) === XML.Element # Or your XML.jl equivalent
-    ]
+    element_children_of_boundary = XML.AbstractXMLNode[]
+    for c in boundary_children
+        if nodetype(c) === XML.Element
+            push!(element_children_of_boundary, c)
+        end
+    end
 
     if boundary_type_sym === :outerBoundaryIs
         if length(element_children_of_boundary) == 1
@@ -816,9 +812,9 @@ function _handle_polygon_boundary!(parent_polygon::KML.Polygon, boundary_xml_nod
                 @warn "<outerBoundaryIs> for Polygon expected <LinearRing> child, got <$(XML.tag(lr_xml_node))>"
             end
         else
-            @warn "<outerBoundaryIs> for Polygon did not contain exactly one element child. Found $(length(element_children_of_boundary)) elements: $([XML.tag(el) for el in element_children_of_boundary])"
+            @warn "<outerBoundaryIs> for Polygon did not contain exactly one element child. Found $(length(element_children_of_boundary)) elements"
         end
-    elseif boundary_type_sym === :innerBoundaryIs # Lenient parsing for multiple LinearRings
+    elseif boundary_type_sym === :innerBoundaryIs
         if isempty(element_children_of_boundary)
             @warn "<innerBoundaryIs> for Polygon contained no element children."
         else
