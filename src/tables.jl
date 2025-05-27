@@ -393,17 +393,17 @@ end
 
 # ===== Optimized Eager Collection (FASTEST - Recommended) =====
 struct EagerLazyPlacemarkIterator
-    placemarks::Vector{NamedTuple{(:name, :description, :geometry), Tuple{String, String, Union{Missing,Geometry}}}}
-    
+    placemarks::Vector{NamedTuple{(:name, :description, :geometry),Tuple{String,String,Union{Missing,Geometry}}}}
+
     function EagerLazyPlacemarkIterator(root_node::XML.AbstractXMLNode)
-        placemarks = Vector{NamedTuple{(:name, :description, :geometry), Tuple{String, String, Union{Missing,Geometry}}}}()
+        placemarks = Vector{NamedTuple{(:name, :description, :geometry),Tuple{String,String,Union{Missing,Geometry}}}}()
         sizehint!(placemarks, 1000)  # Pre-allocate for typical layer size
-        
+
         _collect_placemarks_optimized!(placemarks, root_node)
-        
+
         # Shrink to fit
         sizehint!(placemarks, length(placemarks))
-        
+
         new(placemarks)
     end
 end
@@ -411,20 +411,20 @@ end
 # Optimized collection with minimal allocations
 function _collect_placemarks_optimized!(placemarks::Vector, node::XML.AbstractXMLNode)
     node_children = children(node)
-    
-    @inbounds for i in 1:length(node_children)
+
+    @inbounds for i = 1:length(node_children)
         child = node_children[i]
-        
+
         # Skip non-element nodes early
         XML.nodetype(child) === XML.Element || continue
-        
+
         child_tag = tag(child)
-        
+
         if child_tag == "Placemark"
             # Extract only what we need - no full object materialization!
             placemark_data = extract_placemark_fields_lazy(child)
             push!(placemarks, placemark_data)
-            
+
         elseif child_tag in ("Document", "Folder")  # Inline container check
             _collect_placemarks_optimized!(placemarks, child)
         end
@@ -432,7 +432,7 @@ function _collect_placemarks_optimized!(placemarks::Vector, node::XML.AbstractXM
 end
 
 # Fast iteration for eager collection
-Base.iterate(iter::EagerLazyPlacemarkIterator, state=1) = 
+Base.iterate(iter::EagerLazyPlacemarkIterator, state = 1) =
     state > length(iter.placemarks) ? nothing : (iter.placemarks[state], state + 1)
 
 Base.length(iter::EagerLazyPlacemarkIterator) = length(iter.placemarks)
@@ -449,7 +449,7 @@ end
 # Fast text extraction with minimal allocations
 function extract_text_content_fast(node::XML.AbstractXMLNode)
     node_children = children(node)
-    
+
     # Common case: single text node
     if length(node_children) == 1
         child = node_children[1]
@@ -457,12 +457,12 @@ function extract_text_content_fast(node::XML.AbstractXMLNode)
             return strip(XML.value(child))
         end
     end
-    
+
     # Multiple or no text nodes
     if isempty(node_children)
         return ""
     end
-    
+
     # Use IOBuffer for multiple text nodes
     io = IOBuffer()
     found_text = false
@@ -485,18 +485,27 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
         for child in children(geom_node)
             if tag(child) == "coordinates"
                 coord_text = extract_text_content(child)
-                coords = _parse_single_coordinate(coord_text)
-                return Point(; coordinates = coords)
+                coords = _parse_coordinates_automa(coord_text)
+                if isempty(coords)
+                    return Point(; coordinates = nothing)
+                else
+                    # Take first coordinate for Point
+                    return Point(; coordinates = coords[1])
+                end
             end
         end
+        return Point(; coordinates = nothing)
+
     elseif geom_tag == "LineString"
         for child in children(geom_node)
             if tag(child) == "coordinates"
                 coord_text = extract_text_content(child)
-                coords = _parse_coordinate_list(coord_text)
-                return LineString(; coordinates = coords)
+                coords = _parse_coordinates_automa(coord_text)
+                return LineString(; coordinates = isempty(coords) ? nothing : coords)
             end
         end
+        return LineString(; coordinates = nothing)
+
     elseif geom_tag == "Polygon"
         outer_ring = nothing
         inner_rings = LinearRing[]
@@ -513,7 +522,10 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
             elseif child_tag == "innerBoundaryIs"
                 for boundary_child in children(child)
                     if tag(boundary_child) == "LinearRing"
-                        push!(inner_rings, parse_linear_ring_lazy(boundary_child))
+                        ring = parse_linear_ring_lazy(boundary_child)
+                        if ring !== nothing && ring.coordinates !== nothing && !isempty(ring.coordinates)
+                            push!(inner_rings, ring)
+                        end
                     end
                 end
             end
@@ -521,15 +533,22 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
 
         if outer_ring !== nothing
             return Polygon(; outerBoundaryIs = outer_ring, innerBoundaryIs = isempty(inner_rings) ? nothing : inner_rings)
+        else
+            # Return empty polygon with default empty LinearRing
+            return Polygon(; outerBoundaryIs = LinearRing())
         end
+
     elseif geom_tag == "MultiGeometry"
         geometries = Geometry[]
         for child in children(geom_node)
             if tag(child) in ("Point", "LineString", "Polygon", "MultiGeometry")
-                push!(geometries, parse_geometry_lazy(child))
+                geom = parse_geometry_lazy(child)
+                if !ismissing(geom)
+                    push!(geometries, geom)
+                end
             end
         end
-        return MultiGeometry(; Geometries = geometries)
+        return MultiGeometry(; Geometries = isempty(geometries) ? nothing : geometries)
     end
 
     return missing
@@ -539,60 +558,11 @@ function parse_linear_ring_lazy(ring_node::XML.AbstractXMLNode)
     for child in children(ring_node)
         if tag(child) == "coordinates"
             coord_text = extract_text_content(child)
-            coords = _parse_coordinate_list(coord_text)
-            return LinearRing(; coordinates = coords)
+            coords = _parse_coordinates_automa(coord_text)
+            return LinearRing(; coordinates = isempty(coords) ? nothing : coords)
         end
     end
-    return LinearRing()
-end
-
-# Fast coordinate parsing for single points
-function _parse_single_coordinate(text::AbstractString)
-    parts = split(strip(text), ',')
-    if length(parts) >= 3
-        return Coord3(parse(Float64, parts[1]), parse(Float64, parts[2]), parse(Float64, parts[3]))
-    elseif length(parts) == 2
-        return Coord2(parse(Float64, parts[1]), parse(Float64, parts[2]))
-    else
-        return nothing
-    end
-end
-
-# Simple coordinate list parser for common cases
-function _parse_coordinate_list(text::AbstractString)
-    # For simple cases, avoid the heavy Automa parser
-    text = strip(text)
-    if isempty(text)
-        return Coord3[]  # Use the KML type alias
-    end
-
-    # Quick check if it's a simple format
-    if !occursin('\n', text) && count(',', text) <= 100
-        # Simple single-line format
-        coords = Coord3[]
-        for coord_str in split(text, r"\s+")
-            isempty(coord_str) && continue
-            parts = split(coord_str, ',')
-            if length(parts) >= 2
-                if length(parts) >= 3
-                    push!(coords, Coord3(parse(Float64, parts[1]), parse(Float64, parts[2]), parse(Float64, parts[3])))
-                else
-                    # Convert 2D to 3D with zero altitude
-                    push!(coords, Coord3(parse(Float64, parts[1]), parse(Float64, parts[2]), 0.0))
-                end
-            end
-        end
-        # Return appropriate type based on dimensions
-        if all(c -> c[3] == 0.0, coords)
-            # All altitudes are zero, return 2D coordinates
-            return [Coord2(c[1], c[2]) for c in coords]
-        else
-            return coords
-        end
-    else
-        # Fall back to Automa for complex cases
-        return _parse_coordinates_automa(text)
-    end
+    return LinearRing(; coordinates = nothing)
 end
 
 # Extract only the fields needed for DataFrame
