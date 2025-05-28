@@ -200,33 +200,20 @@ function object(node::XML.AbstractXMLNode)
         add_attributes!(o, node) # Assumes add_attributes! correctly uses XML.attributes(node)
         node_children = XML.children(node)
 
-        if T === Snippet || T === SimpleData # Add KML.SimpleData here
+        if T === Snippet || T === SimpleData
             if hasfield(T, :content) && fieldtype(T, :content) === String
-                text_parts = String[]
-                for child_node_val in node_children # Iterate children of <Snippet> or <SimpleData>
-                    if nodetype(child_node_val) === XML.Text || nodetype(child_node_val) === XML.CData # Corrected
-                        push!(text_parts, XML.value(child_node_val))
-                    elseif nodetype(child_node_val) === XML.Element && T === KML.Snippet
-                        # If Snippet specifically could have other defined element children for other fields
-                        # add_element!(o, child_node_val) 
-                    end
-                end
-                setfield!(o, :content, String(strip(join(text_parts))))
+                setfield!(o, :content, extract_text_content_fast(node))
             end
-            # If Snippet/SimpleData have other fields defined as KML elements (unlikely for SimpleData)
-            if T === KML.Snippet # Or more generally, if T can have other element children for other fields
+            # For Snippet, still process any element children
+            if T === KML.Snippet
                 for child_element_node in node_children
                     if nodetype(child_element_node) === XML.Element
-                        # Avoid re-processing if content was formed from these elements above,
-                        # this loop is for distinct other fields of Snippet if any.
-                        # add_element!(o, child_element_node) # This line might need to be more selective
+                        add_element!(o, child_element_node)
                     end
                 end
             end
-            # For Snippet and SimpleData, usually no further KML *element* children define other fields.
-            # If they could, the generic loop below would be needed, but filtered.
         else
-            # Generic parsing of *child ELEMENTS* for all other KMLElement types
+            # Generic parsing of child ELEMENTS for all other KMLElement types
             for child_element_node in node_children
                 if nodetype(child_element_node) === XML.Element
                     add_element!(o, child_element_node)
@@ -238,25 +225,19 @@ function object(node::XML.AbstractXMLNode)
 
     # ──  2. Enums ───────────────────────────────────────────────────────────────
     if sym in ENUM_NAMES_SET
-        node_children = XML.children(node)
-        # Enum tag <myEnum>value</myEnum> should have one XML.Text child.
-        if length(node_children) == 1 && XML.nodetype(node_children[1]) === XML.Text # Correct type check
-            return getproperty(Enums, sym)(XML.value(node_children[1]))
+        text_content = extract_text_content_fast(node)
+        if !isempty(text_content)
+            return getproperty(Enums, sym)(text_content)
         else
-            @warn "Enum tag <$(XML.tag(node))> did not contain simple text as expected."
-            text_parts = [XML.value(c) for c in node_children if XML.nodetype(c) === XML.Text] # Correct type check
-            if !isempty(text_parts)
-                return getproperty(Enums, sym)(strip(join(text_parts)))
-            else
-                return nothing
-            end
+            @warn "Enum tag <$(XML.tag(node))> did not contain text content."
+            return nothing
         end
     end
 
     # ──  3. Simple leaf tags (handled if object() is called on them directly)
-    if XML.is_simple(node) # True if no attrs, one child, and that child is Text or CData
-        single_child = only(XML.children(node)) # This is safe due to is_simple definition
-        return String(XML.value(single_child)) # Correctly gets content of Text or CData
+    if XML.is_simple(node)
+        text_content = extract_text_content_fast(node)
+        return isempty(text_content) ? nothing : text_content
     end
 
     # ──  4. Fallback ─────────────────────────────────────────────────────────────
@@ -286,7 +267,7 @@ function _object_slow(node::XML.AbstractXMLNode)
             "Tag '$original_tag_name' (symbol :$sym) is being parsed as an Enum by `_object_slow`. " *
             "Consider if this specific Enum should also be optimized in the main `object` function's Enum handling path."
         )
-        return getproperty(Enums, sym)(XML.value(only(node)))
+        return getproperty(Enums, sym)(extract_text_content_fast(node))
     end
 
     # Path 2: Is it a KML type defined in the KML module but somehow missed by TAG_TO_TYPE?
@@ -467,7 +448,7 @@ function _parse_coordinates_automa(txt::AbstractString)
 end
 
 # -----------------------------------------------------------------------------
-# Main add_element! function (now much shorter)
+# Main add_element! function
 # -----------------------------------------------------------------------------
 function add_element!(parent::Union{KML.Object,KML.KMLElement}, child_xml_node::XML.AbstractXMLNode)
     child_parsed_val = object(child_xml_node)
@@ -490,25 +471,12 @@ function add_element!(parent::Union{KML.Object,KML.KMLElement}, child_xml_node::
         if hasfield(typeof(parent), field_name_sym) &&
            Base.nonnothingtype(fieldtype(typeof(parent), field_name_sym)) === String
 
-            child_children = XML.children(child_xml_node)
-
-            buffer = IOBuffer()
-            for content_child_node in child_children
-                print(buffer, content_child_node)
-            end
-            text_content_for_field = String(strip(String(take!(buffer))))
-
-            if isempty(child_children) && isempty(text_content_for_field)
-                text_content_for_field = ""
-            end
-
+            text_content_for_field = extract_text_content_fast(child_xml_node)
             _convert_and_set_simple_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node))
             return
 
         elseif XML.is_simple(child_xml_node) && hasfield(typeof(parent), field_name_sym)
-            child_children = XML.children(child_xml_node)
-            single_child = only(child_children)
-            text_content_for_field = String(XML.value(single_child))
+            text_content_for_field = extract_text_content_fast(child_xml_node)
             _convert_and_set_simple_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node))
             return
         end
@@ -569,7 +537,7 @@ end
 function _convert_and_set_simple_field!(
     parent::Union{KML.Object,KML.KMLElement},
     field_name_sym::Symbol,
-    raw_text_from_kml::String,
+    raw_text_from_kml::AbstractString, # Raw text from the KML tag
     child_xml_tag_str::String, # Original XML tag string for warnings
 )
     # Field name mapping for KML <begin>/<end> tags to Julia :begin_/:end_ fields

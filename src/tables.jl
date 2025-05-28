@@ -13,6 +13,7 @@ import ..KML:
     Placemark,
     Geometry,
     object,
+    extract_text_content_fast,
     unwrap_single_part_multigeometry,
     LinearRing,
     Point,
@@ -441,41 +442,6 @@ Base.eltype(::Type{EagerLazyPlacemarkIterator}) = eltype(iter.placemarks)
 
 #─────────────────────────────────────────────────────────────────────────────────────#
 
-# Direct text extraction without object materialization
-function extract_text_content(node::XML.AbstractXMLNode)
-    return extract_text_content_fast(node)
-end
-
-# Fast text extraction with minimal allocations
-function extract_text_content_fast(node::XML.AbstractXMLNode)
-    node_children = children(node)
-
-    # Common case: single text node
-    if length(node_children) == 1
-        child = node_children[1]
-        if XML.nodetype(child) === XML.Text || XML.nodetype(child) === XML.CData
-            return strip(XML.value(child))
-        end
-    end
-
-    # Multiple or no text nodes
-    if isempty(node_children)
-        return ""
-    end
-
-    # Use IOBuffer for multiple text nodes
-    io = IOBuffer()
-    found_text = false
-    for child in node_children
-        if XML.nodetype(child) === XML.Text || XML.nodetype(child) === XML.CData
-            found_text && write(io, ' ')  # Add space between text nodes
-            write(io, XML.value(child))
-            found_text = true
-        end
-    end
-    return strip(String(take!(io)))
-end
-
 # Minimal geometry parsing - only what's needed for DataFrame
 function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
     geom_tag = tag(geom_node)
@@ -484,7 +450,7 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
         # Extract coordinates directly
         for child in children(geom_node)
             if tag(child) == "coordinates"
-                coord_text = extract_text_content(child)
+                coord_text = extract_text_content_fast(child)
                 coords = _parse_coordinates_automa(coord_text)
                 if isempty(coords)
                     return Point(; coordinates = nothing)
@@ -499,7 +465,7 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
     elseif geom_tag == "LineString"
         for child in children(geom_node)
             if tag(child) == "coordinates"
-                coord_text = extract_text_content(child)
+                coord_text = extract_text_content_fast(child)
                 coords = _parse_coordinates_automa(coord_text)
                 return LineString(; coordinates = isempty(coords) ? nothing : coords)
             end
@@ -557,7 +523,7 @@ end
 function parse_linear_ring_lazy(ring_node::XML.AbstractXMLNode)
     for child in children(ring_node)
         if tag(child) == "coordinates"
-            coord_text = extract_text_content(child)
+            coord_text = extract_text_content_fast(child)
             coords = _parse_coordinates_automa(coord_text)
             return LinearRing(; coordinates = isempty(coords) ? nothing : coords)
         end
@@ -575,13 +541,13 @@ function extract_placemark_fields_lazy(placemark_node::XML.AbstractXMLNode)
         child_tag = tag(child)
 
         if child_tag == "name"
-            name = extract_text_content(child)
+            name = extract_text_content_fast(child)
             # Handle HTML entities if needed
             if occursin('&', name)
                 name = decode_named_entities(name)
             end
         elseif child_tag == "description"
-            description = extract_text_content(child)
+            description = extract_text_content_fast(child)
         elseif child_tag in ("Point", "LineString", "Polygon", "MultiGeometry")
             # Only parse geometry if we haven't found one yet
             if ismissing(geometry)
