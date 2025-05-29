@@ -3,8 +3,8 @@
 #------------------------------------------------------------------------------
 
 using Dates, TimeZones
-# include("Coordinates.jl")
 using .Coordinates: Coord2, Coord3
+using .Enums
 
 # ─── internal helpers / constants ────────────────────────────────────────────
 
@@ -20,8 +20,8 @@ macro def(name, definition)
 end
 
 @def altitude_mode_elements begin
-    altitudeMode::Union{Nothing,Enums.altitudeMode} = nothing
-    gx_altitudeMode::Union{Nothing,Enums.gx_altitudeMode} = nothing
+    altitudeMode::Union{Nothing,altitudeMode} = nothing
+    gx_altitudeMode::Union{Nothing,gx_altitudeMode} = nothing
 end
 
 macro option(ex)
@@ -89,104 +89,6 @@ function typemap(o::KMLElement)
 end
 
 Base.:(==)(a::T, b::T) where {T<:KMLElement} = all(getfield(a, f) == getfield(b, f) for f in fieldnames(T))
-
-# ─── minimal "Enums" sub‑module (no external deps) ───────────────────────────
-module Enums
-import ..NoAttributes
-using XML
-abstract type AbstractKMLEnum <: NoAttributes end
-Base.show(io::IO, o::AbstractKMLEnum) = print(io, typeof(o), ": ", repr(o.value))
-Base.convert(::Type{T}, x::String) where {T<:AbstractKMLEnum} = T(x)
-Base.string(o::AbstractKMLEnum) = o.value
-macro kml_enum(enum_name::Symbol, vals...)
-    # enum_name is the symbol for the enum type, e.g., :altitudeMode
-    # vals is a tuple of symbols for the valid values, e.g., (:clampToGround, :relativeToGround, :absolute)
-
-    # Create a string version of the enum's name (e.g., "altitudeMode")
-    enum_name_as_string = string(enum_name)
-
-    # Create a tuple of strings for the valid enum values (e.g., ("clampToGround", "relativeToGround", "absolute"))
-    # This tuple will be used for both the runtime check and the error message.
-    valid_values_as_strings_tuple = map(string, vals)
-
-    esc(
-        quote
-            struct $enum_name <: AbstractKMLEnum # AbstractKMLEnum is defined in the same Enums module
-                value::String # The validated string value
-
-                # Constructor that takes a String
-                function $enum_name(input_string::String)
-                    # Check if the input_string is one of the valid values
-                    # $valid_values_as_strings_tuple is spliced in directly here
-                    if !(input_string ∈ $valid_values_as_strings_tuple)
-                        # Construct the error message using the pre-stringified components
-                        # $enum_name_as_string and $valid_values_as_strings_tuple are spliced in
-                        error_msg = string(
-                            $enum_name_as_string,
-                            " must be one of ",
-                            $valid_values_as_strings_tuple, # This will show as ("val1", "val2", ...)
-                            ", but got: '",
-                            input_string,
-                            "'",
-                        )
-                        error(error_msg)
-                    end
-                    new(input_string) # Store the validated string
-                end
-
-                # Convenience constructor for any AbstractString input (delegates to the String constructor)
-                function $enum_name(input_abstract_string::AbstractString)
-                    $enum_name(String(input_abstract_string))
-                end
-            end
-        end,
-    )
-end
-# @kml_enum altitudeMode clampToGround relativeToGround absolute
-struct altitudeMode <: AbstractKMLEnum
-    value::String # Stores the KML standard-compliant value
-
-    function altitudeMode(input_value::AbstractString)
-        # Convert input to String for consistent processing
-        input_str = String(input_value)
-
-        # Normalize "clampedToGround" to "clampToGround"
-        normalized_str = if input_str == "clampedToGround"
-            "clampToGround"
-        else
-            input_str
-        end
-
-        # Define the standard valid options
-        valid_options = ("clampToGround", "relativeToGround", "absolute")
-
-        # Check if the normalized string is one of the valid options
-        if !(normalized_str ∈ valid_options)
-            error_message = string(
-                "altitudeMode must be one of ",
-                valid_options,
-                ", but got original value: '",
-                input_str, # Show the original value in the error
-                "'",
-            )
-            error(error_message)
-        end
-        new(normalized_str) # Store the (potentially normalized) standard value
-    end
-end
-@kml_enum gx_altitudeMode relativeToSeaFloor clampToSeaFloor
-@kml_enum refreshMode onChange onInterval onExpire
-@kml_enum viewRefreshMode never onStop onRequest onRegion
-@kml_enum shape rectangle cylinder sphere
-@kml_enum gridOrigin lowerLeft upperLeft
-@kml_enum displayMode default hide
-@kml_enum listItemType check checkOffOnly checkHideChildren radioFolder
-@kml_enum units fraction pixels insetPixels
-@kml_enum itemIconState open closed error fetching0 fetching1 fetching2
-@kml_enum styleState normal highlight
-@kml_enum colorMode normal random
-@kml_enum flyToMode smooth bounce
-end # module Enums
 
 # ─── KMLFile + core object hierarchy (NO GeoInterface code) ──────────────────
 mutable struct KMLFile
@@ -321,8 +223,8 @@ end
 Base.@kwdef mutable struct hotSpot <: KMLElement{(:x, :y, :xunits, :yunits)}
     @option x ::Float64
     @option y ::Float64
-    @option xunits ::Enums.units
-    @option yunits ::Enums.units
+    @option xunits ::units
+    @option yunits ::units
 end
 
 # Aliases for hotSpot, used in specific contexts (e.g., ScreenOverlay fields) 
@@ -352,9 +254,9 @@ TAG_TO_TYPE[:TimeSpan] = TimeSpan
 Base.@kwdef mutable struct Link <: Object
     @object
     @option href ::String
-    @option refreshMode ::Enums.refreshMode
+    @option refreshMode ::refreshMode
     @option refreshInterval ::Float64
-    @option viewRefreshMode ::Enums.viewRefreshMode
+    @option viewRefreshMode ::viewRefreshMode
     @option viewRefreshTime ::Float64
     @option viewBoundScale ::Float64
     @option viewFormat ::String
@@ -364,9 +266,9 @@ end
 Base.@kwdef mutable struct Icon <: Object
     @object
     @option href ::String
-    @option refreshMode ::Enums.refreshMode
+    @option refreshMode ::refreshMode
     @option refreshInterval::Float64
-    @option viewRefreshMode::Enums.viewRefreshMode
+    @option viewRefreshMode::viewRefreshMode
     @option viewRefreshTime::Float64
     @option viewBoundScale ::Float64
     @option viewFormat ::String
@@ -446,7 +348,7 @@ end
 @def colorstyle begin
     @object
     @option color ::String
-    @option colorMode ::Enums.colorMode
+    @option colorMode ::colorMode
 end
 
 Base.@kwdef mutable struct LineStyle <: ColorStyle
@@ -481,7 +383,7 @@ end
 # It is used to define the appearance of the balloon that appears when a user clicks on a placemark.
 
 Base.@kwdef mutable struct ItemIcon <: NoAttributes
-    @option state::Enums.itemIconState
+    @option state::itemIconState
     @option href ::String
 end
 
@@ -497,7 +399,7 @@ Base.@kwdef mutable struct BalloonStyle <: SubStyle
     @option bgColor ::String
     @option textColor ::String
     @option text ::String
-    @option displayMode::Enums.displayMode
+    @option displayMode::displayMode
 end
 
 #────────────────────────────  STYLE SELECTORS  ──────────────────────────────
@@ -517,7 +419,7 @@ end
 
 Base.@kwdef mutable struct StyleMapPair <: Object
     @object
-    @option key ::Enums.styleState
+    @option key ::styleState
     @option styleUrl::String
     @option Style ::Style
 end
@@ -731,7 +633,7 @@ end
 Base.@kwdef mutable struct gx_FlyTo <: gx_TourPrimitive
     @object
     @option gx_duration ::Float64
-    @option gx_flyToMode ::Enums.flyToMode
+    @option gx_flyToMode ::flyToMode
     @option AbstractView ::AbstractView
 end
 
@@ -865,7 +767,7 @@ Base.@kwdef mutable struct ImagePyramid <: NoAttributes
     @option tileSize ::Int
     @option maxWidth ::Int
     @option maxHeight ::Int
-    @option gridOrigin::Enums.gridOrigin
+    @option gridOrigin::gridOrigin
 end
 
 #────────────────────────────  OVERLAYS  ─────────────────────────────────────
@@ -884,7 +786,7 @@ Base.@kwdef mutable struct PhotoOverlay <: Overlay
     @option ViewVolume ::ViewVolume
     @option ImagePyramid ::ImagePyramid
     @option Point ::Point
-    @option shape ::Enums.shape
+    @option shape ::shape
 end
 
 Base.@kwdef mutable struct ScreenOverlay <: Overlay

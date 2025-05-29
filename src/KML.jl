@@ -9,6 +9,7 @@ using Automa, Parsers               # for coordinates parsing
 
 # ─── split implementation files ──────────────────────────────────────────────
 include("Coordinates.jl")       # coordinate parsing and string generation
+include("Enums.jl")             # KML enum types (altitudeMode, colorMode, etc.)
 include("types.jl")             # all KML data types & helpers (no GeoInterface)
 include("utils.jl")             # utility functions (e.g., for parsing)
 include("Layers.jl")            # Add this line - layer management functionality

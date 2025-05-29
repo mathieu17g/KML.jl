@@ -1,5 +1,6 @@
 # include("Coordinates.jl")
 using .Coordinates: parse_coordinates_automa, coordinate_string
+import ..Enums
 
 # turn an XML.Node into a KMLFile by finding the <kml> element
 function KMLFile(doc::XML.AbstractXMLNode)
