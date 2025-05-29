@@ -3,10 +3,10 @@
 #------------------------------------------------------------------------------
 
 using Dates, TimeZones
+# include("Coordinates.jl")
+using .Coordinates: Coord2, Coord3
 
 # ─── internal helpers / constants ────────────────────────────────────────────
-const Coord2 = SVector{2,Float64}
-const Coord3 = SVector{3,Float64}
 
 const TAG_TO_TYPE = Dict{Symbol,DataType}()      # XML tag => Julia type
 const _FIELD_MAP_CACHE = IdDict{DataType,Dict{Symbol,Type}}() # reflect once, reuse

@@ -8,6 +8,7 @@ using StaticArrays                  # small fixed‑size coordinate vectors
 using Automa, Parsers               # for coordinates parsing
 
 # ─── split implementation files ──────────────────────────────────────────────
+include("Coordinates.jl")       # coordinates parsing & generation
 include("types.jl")             # all KML data types & helpers (no GeoInterface)
 include("utils.jl")             # utility functions (e.g., for parsing)
 include("geointerface.jl")      # GeoInterface extensions & pretty printing

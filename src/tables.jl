@@ -21,8 +21,8 @@ import ..KML:
     Polygon,
     MultiGeometry,
     Coord3,
-    Coord2,
-    _parse_coordinates_automa
+    Coord2
+import ..Coordinates: parse_coordinates_automa
 import XML: XML, parse, Node, LazyNode, tag, children, attributes
 using StaticArrays
 using Base.Iterators: flatten
@@ -451,7 +451,7 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
         for child in children(geom_node)
             if tag(child) == "coordinates"
                 coord_text = extract_text_content_fast(child)
-                coords = _parse_coordinates_automa(coord_text)
+                coords = parse_coordinates_automa(coord_text)
                 if isempty(coords)
                     return Point(; coordinates = nothing)
                 else
@@ -466,7 +466,7 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
         for child in children(geom_node)
             if tag(child) == "coordinates"
                 coord_text = extract_text_content_fast(child)
-                coords = _parse_coordinates_automa(coord_text)
+                coords = parse_coordinates_automa(coord_text)
                 return LineString(; coordinates = isempty(coords) ? nothing : coords)
             end
         end
@@ -524,7 +524,7 @@ function parse_linear_ring_lazy(ring_node::XML.AbstractXMLNode)
     for child in children(ring_node)
         if tag(child) == "coordinates"
             coord_text = extract_text_content_fast(child)
-            coords = _parse_coordinates_automa(coord_text)
+            coords = parse_coordinates_automa(coord_text)
             return LinearRing(; coordinates = isempty(coords) ? nothing : coords)
         end
     end
