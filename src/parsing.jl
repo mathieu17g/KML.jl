@@ -1,15 +1,32 @@
-export Node, _parse_kmlfile
+export Node, _parse_kmlfile, _read_kmz_file_from_path_error_hinter
 
 # Include the time parsing module
 include("KMLTimeElementParsing.jl")
 
+# Include field conversion and assignment modules
+include("FieldConversion.jl")
+include("FieldAssignment.jl")
+
 using TimeZones
 using Dates
 
-# Now we can import from it
-import ..Core: TAG_TO_TYPE, KMLElement, NoAttributes, typemap, _parse_kmlfile
+# Import from the new modules
+using .FieldConversion: convert_field_value, FieldConversionError
+using .FieldAssignment: assign_field!, assign_complex_object!, handle_polygon_boundary!
+
+# Import other dependencies
+import ..Core: TAG_TO_TYPE, KMLElement, NoAttributes, typemap, _parse_kmlfile, KMLFile
 import ..Enums
 import ..Coordinates: parse_coordinates_automa, coordinate_string, Coord2, Coord3
+import ..Components: Snippet, SimpleData
+import ..Geometries: Polygon
+import ..TimeElements
+import ..Styles
+import ..Views
+import ..Features
+import ..extract_text_content_fast
+import XML
+import XML: nodetype
 using .KMLTimeElementParsing: parse_iso8601
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -34,9 +51,9 @@ end
 #  KMx File Types
 # ──────────────────────────────────────────────────────────────────────────────
 
-abstract type KMxFileType end # Abstract type for KML/KMZ dispatch
-struct KML_KMxFileType <: KMxFileType end # Marker for .kml files
-struct KMZ_KMxFileType <: KMxFileType end # Marker for .kmz files
+abstract type KMxFileType end
+struct KML_KMxFileType <: KMxFileType end
+struct KMZ_KMxFileType <: KMxFileType end
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  KMLFile reading - materializes all KML objects
@@ -44,33 +61,32 @@ struct KMZ_KMxFileType <: KMxFileType end # Marker for .kmz files
 
 # Read from any IO stream
 function Base.read(io::IO, ::Type{KMLFile})
-    return xmlread(io, Node) |> _parse_kmlfile
+    return XML.read(io, Node) |> _parse_kmlfile
 end
 
 # Internal helper for KMLFile reading from file path
 function _read_file_from_path(::KML_KMxFileType, path::AbstractString)
-    return xmlread(path, Node) |> _parse_kmlfile
+    return XML.read(path, Node) |> _parse_kmlfile
 end
-
-# Placeholder for KMZ - will be implemented by the extension
-# function _read_file_from_path(::KMZ_KMxFileType, path::AbstractString)
-#     error("KMZ support requires the KMLZipArchivesExt extension. Please load ZipArchives.jl first.")
-# end
 
 # Read from KML or KMZ file path
 function Base.read(path::AbstractString, ::Type{KMLFile})
     file_ext = lowercase(splitext(path)[2])
     if file_ext == ".kmz"
-        return _read_file_from_path(KMZ_KMxFileType(), path) # Dispatch for KMZ
+        # Check if extension is loaded
+        if !hasmethod(_read_file_from_path, Tuple{KMZ_KMxFileType, AbstractString})
+            error("KMZ support requires the KMLZipArchivesExt extension. Please load ZipArchives.jl first.")
+        end
+        return _read_file_from_path(KMZ_KMxFileType(), path)
     elseif file_ext == ".kml"
-        return _read_file_from_path(KML_KMxFileType(), path) # Dispatch for KML
+        return _read_file_from_path(KML_KMxFileType(), path)
     else
         error("Unsupported file extension: $file_ext. Only .kml and .kmz are supported.")
     end
 end
 
 # Parse KMLFile from string
-Base.parse(::Type{KMLFile}, s::AbstractString) = _parse_kmlfile(xmlparse(s, Node))
+Base.parse(::Type{KMLFile}, s::AbstractString) = _parse_kmlfile(XML.parse(s, Node))
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  LazyKMLFile reading - just store the XML without materializing KML objects
@@ -78,49 +94,44 @@ Base.parse(::Type{KMLFile}, s::AbstractString) = _parse_kmlfile(xmlparse(s, Node
 
 # Read LazyKMLFile from IO stream
 function Base.read(io::IO, ::Type{LazyKMLFile})
-    return xmlread(io, LazyNode) |> LazyKMLFile
+    return XML.read(io, LazyNode) |> LazyKMLFile
 end
 
 # Internal helper for LazyKMLFile reading from file path
 function _read_lazy_file_from_path(::KML_KMxFileType, path::AbstractString)
-    doc = xmlread(path, LazyNode)
+    doc = XML.read(path, LazyNode)
     return LazyKMLFile(doc)
 end
-
-# Placeholder for KMZ - will be implemented by the extension
-# function _read_lazy_file_from_path(::KMZ_KMxFileType, path::AbstractString)
-#     error("KMZ support for LazyKMLFile requires the KMLZipArchivesExt extension. Please load ZipArchives.jl first.")
-# end
 
 # Read LazyKMLFile from file path
 function Base.read(path::AbstractString, ::Type{LazyKMLFile})
     file_ext = lowercase(splitext(path)[2])
     if file_ext == ".kmz"
-        return _read_lazy_file_from_path(KMZ_KMxFileType(), path) # Dispatch for KMZ
+        # Check if extension is loaded
+        if !hasmethod(_read_lazy_file_from_path, Tuple{KMZ_KMxFileType, AbstractString})
+            error("KMZ support for LazyKMLFile requires the KMLZipArchivesExt extension. Please load ZipArchives.jl first.")
+        end
+        return _read_lazy_file_from_path(KMZ_KMxFileType(), path)
     elseif file_ext == ".kml"
-        return _read_lazy_file_from_path(KML_KMxFileType(), path) # Dispatch for KML
+        return _read_lazy_file_from_path(KML_KMxFileType(), path)
     else
         error("Unsupported file extension: $file_ext. Only .kml and .kmz are supported.")
     end
 end
 
 # Parse LazyKMLFile from string
-Base.parse(::Type{LazyKMLFile}, s::AbstractString) = LazyKMLFile(xmlparse(s, LazyNode))
+Base.parse(::Type{LazyKMLFile}, s::AbstractString) = LazyKMLFile(XML.parse(s, LazyNode))
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  KMZ reading error hinter
 # ─────────────────────────────────────────────────────────────────────────────
 
 function _read_kmz_file_from_path_error_hinter(io, exc, argtypes, kwargs)
-    if isnothing(Base.get_extension(KML, :KMLZipArchivesExt)) &&
-       exc.f in (_read_file_from_path, _read_lazy_file_from_path) &&
-       first(argtypes) == KMZ_KMxFileType
-        printstyled("\nKMZ reading via extension failed for '$(exc.args[2])'.\n"; color = :yellow, bold = true)
-        printstyled("  - Ensure the KMLZipArchivesExt module is loaded and available.\n"; color = :yellow)
-        printstyled(
-            "  - To enable KMZ support, you might need to install and load the ZipArchives package:\n";
-            color = :yellow,
-        )
+    parent_module = parentmodule(@__MODULE__)
+    # Check if this is a KMZ-related error
+    if exc isa ErrorException && occursin("KMZ support", exc.msg)
+        printstyled("\nKMZ support not available.\n"; color = :yellow, bold = true)
+        printstyled("  - To enable KMZ support, you need to install and load the ZipArchives package:\n"; color = :yellow)
         println("    In the Julia REPL: ")
         printstyled("      1. "; color = :cyan)
         println("`using Pkg`")
@@ -128,10 +139,7 @@ function _read_kmz_file_from_path_error_hinter(io, exc, argtypes, kwargs)
         println("`Pkg.add(\"ZipArchives\")` (if not already installed)")
         printstyled("      3. "; color = :cyan)
         println("`using ZipArchives` (before `using KML` or ensure it's in your project environment)")
-        printstyled(
-            "  - If you don't need KMZ support, this warning can be ignored or the extension potentially removed.\n";
-            color = :yellow,
-        )
+        printstyled("  - If you don't need KMZ support, this warning can be ignored.\n"; color = :yellow)
     end
 end
 
@@ -143,11 +151,11 @@ end
 const Writable = Union{KMLFile,KMLElement,XML.Node}
 
 function Base.write(io::IO, o::Writable; kw...)
-    xmlwrite(io, Node(o); kw...)
+    XML.write(io, Node(o); kw...)
 end
 
 function Base.write(path::AbstractString, o::Writable; kw...)
-    xmlwrite(path, Node(o); kw...)
+    XML.write(path, Node(o); kw...)
 end
 
 Base.write(o::Writable; kw...) = Base.write(stdout, o; kw...)
@@ -190,7 +198,7 @@ end
 # object() – main entry point for parsing XML nodes into KML objects
 # ─────────────────────────────────────────────────────────────────────────────
 
-const ENUM_NAMES_SET = Set(names(Enums; all = true))             # Get all names in Enums
+const ENUM_NAMES_SET = Set(names(Enums; all = true))
 
 # Fast object()  – deal with the handful of tags we care about
 function object(node::XML.AbstractXMLNode)
@@ -206,7 +214,7 @@ function object(node::XML.AbstractXMLNode)
     if haskey(TAG_TO_TYPE, sym)
         T = TAG_TO_TYPE[sym]
         o = T()
-        add_attributes!(o, node) # Assumes add_attributes! correctly uses XML.attributes(node)
+        add_attributes!(o, node)
         node_children = XML.children(node)
 
         if T === Snippet || T === SimpleData
@@ -214,7 +222,7 @@ function object(node::XML.AbstractXMLNode)
                 setfield!(o, :content, extract_text_content_fast(node))
             end
             # For Snippet, still process any element children
-            if T === KML.Snippet
+            if T === Snippet
                 for child_element_node in node_children
                     if nodetype(child_element_node) === XML.Element
                         add_element!(o, child_element_node)
@@ -253,127 +261,101 @@ function object(node::XML.AbstractXMLNode)
     return _object_slow(node)
 end
 
-const KML_NAMES_SET = Set(names(KML; all = true, imported = true)) # Get all names in KML
+const KML_NAMES_SET = let
+    # Collect all names from KML submodules
+    all_names = Set{Symbol}()
+    for mod in [Core, TimeElements, Components, Styles, Views, Geometries, Features]
+        union!(all_names, names(mod; all = true, imported = false))
+    end
+    all_names
+end
 
 function _object_slow(node::XML.AbstractXMLNode)
     original_tag_name = XML.tag(node)
-    sym = tagsym(original_tag_name) # Convert "namespace:tag" to :namespace_tag or :tag
+    sym = tagsym(original_tag_name)
 
-    # This debug message helps trace when this fallback is even entered.
-    # To see @debug messages, run `using Logging; global_logger(ConsoleLogger(stderr, Logging.Debug))`
-    # at the start of your Julia session or script.
-    @debug "Entered _object_slow for tag: '$original_tag_name' (symbol: :$sym). This means the tag was not handled by:" sympath =
-        ("  - Explicit structural tag checks (e.g., for :outerBoundaryIs) in `object()`") *
-        "\n  - The primary `TAG_TO_TYPE` lookup in `object()`." *
-        "\n  - The Enum check (using `ENUM_NAMES_SET`) in `object()`." *
-        "\n  - The simple text content check (`XML.is_simple`) in `object()`."
+    @debug "Entered _object_slow for tag: '$original_tag_name' (symbol: :$sym)"
 
     # Path 1: Is it an Enum that was perhaps missed by the main object() check?
-    # (This check might be redundant if the main object() function's Enum check is robust
-    #  and uses the same ENUM_NAMES_SET, but kept for safety or if _object_slow can be called from other paths)
     if sym in ENUM_NAMES_SET
-        @debug (
-            "Tag '$original_tag_name' (symbol :$sym) is being parsed as an Enum by `_object_slow`. " *
-            "Consider if this specific Enum should also be optimized in the main `object` function's Enum handling path."
-        )
+        @debug "Tag '$original_tag_name' (symbol :$sym) is being parsed as an Enum by `_object_slow`"
         return getproperty(Enums, sym)(extract_text_content_fast(node))
     end
 
     # Path 2: Is it a KML type defined in the KML module but somehow missed by TAG_TO_TYPE?
-    # This is the case where @info was previously used.
-    if sym in KML_NAMES_SET || sym == :Pair # Assuming :Pair is a special KML-like type here
-        @warn begin # Changed to @warn as this implies a missing optimization.
+    if sym in KML_NAMES_SET || sym == :Pair
+        @warn begin
             "Performance Hint: KML type `:$sym` (from tag `'$original_tag_name'`) is being instantiated " *
             "via reflection in `_object_slow`. This is a fallback and less efficient.\n" *
             "ACTION: To improve performance and maintainability, ensure that the tag `'$original_tag_name'` " *
-            "correctly maps to the Julia type `KML.$(sym)` in the `TAG_TO_TYPE` dictionary.\n" *
-            "  - Verify that the Julia struct `KML.$(sym)` is a concrete subtype of `KMLElement` " *
-            "so it's automatically collected by `_collect_concrete!`.\n" *
-            "  - Or, if it's a special case, add a manual mapping for `:$sym` to `TAG_TO_TYPE` during initialization.\n" *
-            "  - Double-check that `tagsym(\"$original_tag_name\")` produces exactly `:$sym` as expected for the dictionary key."
+            "correctly maps to the Julia type in the `TAG_TO_TYPE` dictionary."
         end
 
-        # Object instantiation logic
-        T = getproperty(KML, sym)
+        # Object instantiation logic - need to find the type in the parent module
+        T = if hasproperty(Core, sym)
+            getproperty(Core, sym)
+        elseif hasproperty(TimeElements, sym)
+            getproperty(TimeElements, sym)
+        elseif hasproperty(Components, sym)
+            getproperty(Components, sym)
+        elseif hasproperty(Styles, sym)
+            getproperty(Styles, sym)
+        elseif hasproperty(Views, sym)
+            getproperty(Views, sym)
+        elseif hasproperty(Geometries, sym)
+            getproperty(Geometries, sym)
+        elseif hasproperty(Features, sym)
+            getproperty(Features, sym)
+        else
+            error("Type $sym not found in any KML submodule")
+        end
+        
         o = T()
         add_attributes!(o, node)
-        for child_xml_node in XML.children(node) # Ensure children are processed
+        for child_xml_node in XML.children(node)
             add_element!(o, child_xml_node)
         end
         return o
     end
 
-    # Path 3: Fallthrough - truly unhandled or unrecognized tag by this KML parser's logic.
-    # This means object() will return 'nothing' for this tag.
-    # This 'nothing' might be handled by special logic in `add_element!` (e.g., for unknown tags within a known parent),
-    # or it might result in the tag being effectively ignored if no specific handling exists.
-    @warn sprint() do io
-        # General information about the unhandled tag
-        println(io, "Unhandled Tag: `'$original_tag_name'` (symbol: `:$sym`).")
-        println(io, "This tag was not recognized by the `_object_slow` fallback parser as a known KML type,")
-        println(io, "Enum, or specific structural element. Consequently, `object()` will return `nothing` for this tag.")
-        println(io) # Blank line for separation
-
-        # Actionable advice for the developer
-        println(io, "DEVELOPER ACTION: Please evaluate `'$original_tag_name'`:")
-
-        # Option 1: Standard KML element
-        println(io, "  1. Is it a standard KML element that should be parsed?")
-        println(io, "     - If YES: Define a corresponding Julia struct, e.g.,")
-        println(io, "         `struct $(uppercasefirst(string(sym))) <: KMLElement ... end`")
-        println(io, "       and ensure it's mapped in `TAG_TO_TYPE` (this is often automatic for")
-        println(io, "       concrete subtypes of `KMLElement`).")
-        println(io) # Blank line
-
-        # Option 2: Structural tag needing special handling
-        println(io, "  2. Is it a structural tag (e.g., `<coordinates>`, `<outerBoundaryIs>`) requiring")
-        println(io, "     special logic in `add_element!` after `object()` returns `nothing` for it?")
-        println(io, "     - If YES, and not yet handled:")
-        println(io, "       a. Consider modifying `object()` to return `nothing` for `:$sym` *before* `_object_slow`.")
-        println(io, "          (e.g., `if sym === :$sym return nothing end`)")
-        println(io, "       b. Ensure `add_element!` contains the necessary parsing logic for `:$sym`.")
-        println(io) # Blank line
-
-        # Option 3: Vendor-specific, deprecated, or intentionally unsupported
-        println(io, "  3. Is this tag vendor-specific, deprecated, or intentionally unsupported?")
-        println(io, "     - If YES: This warning might be acceptable. To suppress it for known, intentionally")
-        println(io, "       ignored tags, consider modifying `object()` to return `nothing` silently for `:$sym`")
-        println(io, "       (e.g., by adding `:$sym` to an explicit ignore list before the `_object_slow` call).")
-    end
+    # Path 3: Fallthrough - truly unhandled or unrecognized tag
+    @warn "Unhandled Tag: `'$original_tag_name'` (symbol: `:$sym`). This tag was not recognized."
     return nothing
 end
 
 # -----------------------------------------------------------------------------
-# Main add_element! function
+# Main add_element! function - now using the new field conversion system
 # -----------------------------------------------------------------------------
-function add_element!(parent::Union{KML.Object,KML.KMLElement}, child_xml_node::XML.AbstractXMLNode)
+function add_element!(parent::KMLElement, child_xml_node::XML.AbstractXMLNode)
     child_parsed_val = object(child_xml_node)
 
-    if child_parsed_val isa KML.KMLElement
-        _assign_complex_kml_object!(parent, child_parsed_val, XML.tag(child_xml_node))
+    if child_parsed_val isa KMLElement
+        assign_complex_object!(parent, child_parsed_val, XML.tag(child_xml_node))
         return
-    elseif child_parsed_val isa String
+    elseif child_parsed_val isa AbstractString
         field_name_sym = tagsym(XML.tag(child_xml_node))
-        _convert_and_set_simple_field!(parent, field_name_sym, child_parsed_val, XML.tag(child_xml_node))
+        assign_field!(parent, field_name_sym, child_parsed_val, XML.tag(child_xml_node); parse_iso8601_fn=parse_iso8601)
         return
     else
         field_name_sym = tagsym(XML.tag(child_xml_node))
 
-        if parent isa KML.Polygon && (field_name_sym === :outerBoundaryIs || field_name_sym === :innerBoundaryIs)
-            _handle_polygon_boundary!(parent, child_xml_node, field_name_sym)
+        # Special handling for Polygon boundaries
+        if parent isa Polygon && (field_name_sym === :outerBoundaryIs || field_name_sym === :innerBoundaryIs)
+            handle_polygon_boundary!(parent, child_xml_node, field_name_sym, object)
             return
         end
 
+        # Check if it's a simple field that needs text extraction
         if hasfield(typeof(parent), field_name_sym) &&
            Base.nonnothingtype(fieldtype(typeof(parent), field_name_sym)) === String
 
             text_content_for_field = extract_text_content_fast(child_xml_node)
-            _convert_and_set_simple_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node))
+            assign_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node); parse_iso8601_fn=parse_iso8601)
             return
 
         elseif XML.is_simple(child_xml_node) && hasfield(typeof(parent), field_name_sym)
             text_content_for_field = extract_text_content_fast(child_xml_node)
-            _convert_and_set_simple_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node))
+            assign_field!(parent, field_name_sym, text_content_for_field, XML.tag(child_xml_node); parse_iso8601_fn=parse_iso8601)
             return
         end
 
@@ -382,383 +364,8 @@ function add_element!(parent::Union{KML.Object,KML.KMLElement}, child_xml_node::
 end
 
 # -----------------------------------------------------------------------------
-# Helper Function: Assigning parsed KML.KMLElement objects
+# Helper functions
 # -----------------------------------------------------------------------------
-function _assign_complex_kml_object!(
-    parent::Union{KML.Object,KML.KMLElement},
-    child_kml_object::KML.KMLElement,
-    child_xml_tag_str::String,
-)
-    T_child_obj = typeof(child_kml_object)
-    assigned = false
-
-    # Get the parent type
-    parent_type = typeof(parent)
-
-    # Iterate through fieldnames and get types
-    for field_name_sym in fieldnames(parent_type)
-        # Get original field type for compatibility checks
-        field_type_in_parent = fieldtype(parent_type, field_name_sym)
-
-        # Use the non-nothing type for the actual comparison
-        # since typemap stores non-nothing types
-        non_nothing_field_type = typemap(parent_type)[field_name_sym]
-
-        if T_child_obj <: non_nothing_field_type
-            setfield!(parent, field_name_sym, child_kml_object)
-            assigned = true
-            break
-        elseif non_nothing_field_type <: AbstractVector && T_child_obj <: eltype(non_nothing_field_type)
-            vec = getfield(parent, field_name_sym)
-            if vec === nothing
-                # Use the element type of the non-nothing field type
-                setfield!(parent, field_name_sym, eltype(non_nothing_field_type)[])
-                vec = getfield(parent, field_name_sym)
-            end
-            push!(vec, child_kml_object)
-            assigned = true
-            break
-        end
-    end
-
-    if !assigned
-        @warn "Parsed KML object of type $(T_child_obj) (from tag <$(child_xml_tag_str)>) could not be assigned to any compatible field in parent $(typeof(parent)). Review type definitions."
-    end
-end
-
-# -----------------------------------------------------------------------------
-# Helper Function: Converting string values and setting simple fields
-# Main Dispatcher for Simple Fields
-# -----------------------------------------------------------------------------
-function _convert_and_set_simple_field!(
-    parent::Union{KML.Object,KML.KMLElement},
-    field_name_sym::Symbol,
-    raw_text_from_kml::AbstractString, # Raw text from the KML tag
-    child_xml_tag_str::String, # Original XML tag string for warnings
-)
-    # Field name mapping for KML <begin>/<end> tags to Julia :begin_/:end_ fields
-    true_field_name = field_name_sym
-    if parent isa KML.TimeSpan # Specific to TimeSpan parent
-        if field_name_sym === :begin
-            true_field_name = :begin_
-        end
-        if field_name_sym === :end
-            true_field_name = :end_
-        end
-    end
-
-    if !hasfield(typeof(parent), true_field_name)
-        @warn "Tag <$(child_xml_tag_str)> resolved by object() to String '$(raw_text_from_kml)', but no field named '$field_name_sym' (or mapped '$true_field_name') exists in parent of type $(typeof(parent))."
-        return
-    end
-
-    # Get both original and non-nothing types efficiently
-    ftype_original = fieldtype(typeof(parent), true_field_name)
-    non_nothing_ftype = typemap(typeof(parent))[true_field_name]  # Already cached!
-
-    processed_string_val = String(raw_text_from_kml)
-
-    # Handle empty string for optional fields at the top level
-    if isempty(processed_string_val) && Nothing <: ftype_original
-        setfield!(parent, true_field_name, nothing)
-        return
-    end
-
-    # Dispatch based on field type
-    if true_field_name === :coordinates || true_field_name === :gx_coord
-        parsed_coords_vec = parse_coordinates_automa(processed_string_val)
-        final_val_to_set = nothing
-        if isempty(parsed_coords_vec)
-            final_val_to_set =
-                Nothing <: ftype_original ? nothing : (non_nothing_ftype <: AbstractVector ? non_nothing_ftype() : nothing)
-        elseif non_nothing_ftype <: Union{KML.Coord2,KML.Coord3} # For Point.coordinates
-            if length(parsed_coords_vec) == 1
-                final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec[1])
-            else
-                @warn "Point field $true_field_name expected 1 coordinate, got $(length(parsed_coords_vec)). Assigning $(Nothing <: ftype_original ? "nothing" : "first if possible")."
-                final_val_to_set =
-                    Nothing <: ftype_original ? nothing :
-                    (length(parsed_coords_vec) >= 1 ? convert(non_nothing_ftype, parsed_coords_vec[1]) : nothing)
-            end
-        elseif non_nothing_ftype <: AbstractVector # For LineString.coordinates, LinearRing.coordinates etc.
-            final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec)
-        else
-            @warn "Unhandled type $non_nothing_ftype for coordinate field $true_field_name parsing '$processed_string_val'"
-            final_val_to_set = processed_string_val # Fallback
-        end
-        setfield!(parent, true_field_name, final_val_to_set)
-        return # Coordinates handled
-
-    # Dispatch to vector or scalar handler for other simple types
-    elseif non_nothing_ftype <: AbstractVector && let el_type = eltype(non_nothing_ftype)
-        # Check element type of the vector
-        Base.nonnothingtype(el_type) === String ||
-            Base.nonnothingtype(el_type) <: Integer ||
-            Base.nonnothingtype(el_type) <: AbstractFloat ||
-            Base.nonnothingtype(el_type) <: Bool ||
-            Base.nonnothingtype(el_type) <: KML.Enums.AbstractKMLEnum ||
-            el_type == Union{TimeZones.ZonedDateTime,Dates.Date,String} ||
-            el_type == Union{Dates.Date,TimeZones.ZonedDateTime,String} ||
-            el_type == Union{TimeZones.ZonedDateTime,String,Dates.Date} ||
-            el_type == Union{String,TimeZones.ZonedDateTime,Dates.Date} ||
-            el_type == Union{Dates.Date,String,TimeZones.ZonedDateTime} ||
-            el_type == Union{String,Dates.Date,TimeZones.ZonedDateTime}
-    end
-        _parse_and_append_to_simple_vector!(
-            parent,
-            true_field_name,
-            ftype_original,
-            non_nothing_ftype,
-            processed_string_val,
-            child_xml_tag_str,
-        )
-    else # It's a scalar field (and not coordinates)
-        _parse_and_set_scalar_field!(
-            parent,
-            true_field_name,
-            ftype_original,
-            non_nothing_ftype,
-            processed_string_val,
-            child_xml_tag_str,
-        )
-    end
-end
-
-# -----------------------------------------------------------------------------
-# Helper Function: Parse and Append to a Vector of Simple Types
-# -----------------------------------------------------------------------------
-function _parse_and_append_to_simple_vector!(
-    parent::Union{KML.Object,KML.KMLElement},
-    true_field_name::Symbol,
-    ftype_original::Type, # Original field type, e.g., Union{Nothing, Vector{Union{ZonedDateTime,Date,String}}}
-    vec_type::Type,       # Non-nothing vector type, e.g., Vector{Union{ZonedDateTime,Date,String}}
-    processed_string_val::String, # The string value of *one* child XML tag (e.g., one <when> tag)
-    child_xml_tag_str::String,
-)
-    el_type_original = eltype(vec_type) # Element type, e.g., Union{ZonedDateTime,Date,String}
-    actual_el_type = Base.nonnothingtype(el_type_original) # Non-nothing element type for parsing
-
-    parsed_element_val = nothing
-
-    # Handle empty string for an element if the element type itself can be Nothing
-    if isempty(processed_string_val) && Nothing <: el_type_original
-        parsed_element_val = nothing
-        # TimePrimitive Union handling for vector elements
-    elseif el_type_original == Union{TimeZones.ZonedDateTime,Dates.Date,String} ||
-           el_type_original == Union{Dates.Date,TimeZones.ZonedDateTime,String} ||
-           el_type_original == Union{TimeZones.ZonedDateTime,String,Dates.Date} ||
-           el_type_original == Union{String,TimeZones.ZonedDateTime,Dates.Date} ||
-           el_type_original == Union{Dates.Date,String,TimeZones.ZonedDateTime} ||
-           el_type_original == Union{String,Dates.Date,TimeZones.ZonedDateTime}
-
-        parsed_element_val = parse_iso8601(processed_string_val) # Ensure we parse the string to ZonedDateTime or Date
-    # If parsing failed, parsed_element_val will be the original string
-
-    # Other simple types for vector elements
-    else
-        if actual_el_type === String
-            parsed_element_val = processed_string_val
-        elseif actual_el_type <: Integer
-            parsed_element_val =
-                isempty(processed_string_val) ? (Nothing <: el_type_original ? nothing : zero(actual_el_type)) :
-                Parsers.parse(actual_el_type, processed_string_val)
-        elseif actual_el_type <: AbstractFloat
-            parsed_element_val =
-                isempty(processed_string_val) ? (Nothing <: el_type_original ? nothing : zero(actual_el_type)) :
-                Parsers.parse(actual_el_type, processed_string_val)
-        elseif actual_el_type <: Bool
-            len_el = length(processed_string_val)
-            if len_el == 1
-                parsed_element_val = (processed_string_val[1] == '1')
-            elseif len_el == 4 && uppercase(processed_string_val) == "TRUE"
-                parsed_element_val = true
-            elseif len_el == 5 && uppercase(processed_string_val) == "FALSE"
-                parsed_element_val = false
-            else
-                parsed_element_val = (Nothing <: el_type_original ? nothing : false)
-            end
-        elseif actual_el_type <: KML.Enums.AbstractKMLEnum
-            parsed_element_val =
-                isempty(processed_string_val) && Nothing <: el_type_original ? nothing : actual_el_type(processed_string_val)
-        else
-            @warn "Unhandled element type $actual_el_type for vector field $true_field_name. Storing raw string '$processed_string_val' for element."
-            parsed_element_val = processed_string_val # Fallback to string
-        end
-    end
-
-    # Get or initialize the vector in the parent object
-    current_vector = getfield(parent, true_field_name)
-    if current_vector === nothing
-        # Initialize with an empty vector. The eltype of `vec_type` is `el_type_original`.
-        new_empty_vector = el_type_original[] # This creates Vector{Union{Nothing, ZonedDateTime, Date, String}} for instance
-        setfield!(parent, true_field_name, new_empty_vector)
-        current_vector = new_empty_vector
-    end
-
-    # Push the parsed element, respecting if `parsed_element_val` is `nothing` and the vector's eltype allows `Nothing`
-    if parsed_element_val !== nothing || (Nothing <: el_type_original)
-        push!(current_vector, parsed_element_val)
-    elseif !isempty(processed_string_val)
-        @warn "Could not push unparsed non-empty value '$processed_string_val' into vector for $true_field_name as element type $el_type_original does not allow it or parsing failed."
-    end
-end
-
-# -----------------------------------------------------------------------------
-# Helper Function: Parse and Set a Scalar Simple Field
-# -----------------------------------------------------------------------------
-function _parse_and_set_scalar_field!(
-    parent::Union{KML.Object,KML.KMLElement},
-    true_field_name::Symbol,
-    ftype_original::Type,    # Original field type from struct, e.g. Union{Nothing, String}
-    non_nothing_ftype::Type, # Result of Base.nonnothingtype(ftype_original), e.g. String
-    processed_string_val::String,
-    child_xml_tag_str::String,
-)
-    final_val_to_set = nothing # Initialize
-
-    # Note: The case for `isempty(processed_string_val) && Nothing <: ftype_original`
-    # is handled in the main _convert_and_set_simple_field! before dispatching here.
-    # So, if we are here and processed_string_val is empty, it means the field is NOT optional.
-
-    # TimePrimitive handling for SCALAR fields (Union{TimeZones.ZonedDateTime, Dates.Date, String})
-    if non_nothing_ftype == Union{TimeZones.ZonedDateTime,Dates.Date,String} ||
-       non_nothing_ftype == Union{Dates.Date,TimeZones.ZonedDateTime,String} || # Order variations
-       non_nothing_ftype == Union{TimeZones.ZonedDateTime,String,Dates.Date} ||
-       non_nothing_ftype == Union{String,TimeZones.ZonedDateTime,Dates.Date} ||
-       non_nothing_ftype == Union{Dates.Date,String,TimeZones.ZonedDateTime} ||
-       non_nothing_ftype == Union{String,Dates.Date,TimeZones.ZonedDateTime}
-
-        final_val_to_set = parse_iso8601(processed_string_val)
-    else # Other scalar types
-        # `non_nothing_ftype` here is the actual_type_scalar from your previous version
-        if non_nothing_ftype === String
-            final_val_to_set = processed_string_val
-        elseif non_nothing_ftype <: Integer
-            final_val_to_set =
-                isempty(processed_string_val) ? (Nothing <: ftype_original ? nothing : zero(non_nothing_ftype)) :
-                Parsers.parse(non_nothing_ftype, processed_string_val)
-        elseif non_nothing_ftype <: AbstractFloat
-            final_val_to_set =
-                isempty(processed_string_val) ? (Nothing <: ftype_original ? nothing : zero(non_nothing_ftype)) :
-                Parsers.parse(non_nothing_ftype, processed_string_val)
-        elseif non_nothing_ftype <: Bool
-            len = length(processed_string_val)
-            if len == 1
-                final_val_to_set = (processed_string_val[1] == '1')
-            elseif len == 4 && uppercase(processed_string_val) == "TRUE"
-                final_val_to_set = true
-            elseif len == 5 && uppercase(processed_string_val) == "FALSE"
-                final_val_to_set = false
-            else
-                final_val_to_set = (Nothing <: ftype_original ? nothing : false)
-            end
-        elseif non_nothing_ftype <: KML.Enums.AbstractKMLEnum
-            final_val_to_set =
-                isempty(processed_string_val) && Nothing <: ftype_original ? nothing :
-                non_nothing_ftype(processed_string_val)
-        elseif true_field_name === :coordinates || true_field_name === :gx_coord
-            parsed_coords_vec = parse_coordinates_automa(processed_string_val)
-            if isempty(parsed_coords_vec)
-                final_val_to_set =
-                    Nothing <: ftype_original ? nothing :
-                    (non_nothing_ftype <: AbstractVector ? non_nothing_ftype() : nothing)
-            elseif non_nothing_ftype <: Union{KML.Coord2,KML.Coord3}
-                if length(parsed_coords_vec) == 1
-                    final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec[1])
-                else
-                    @warn "Point field $true_field_name expected 1 coordinate, got $(length(parsed_coords_vec)). Assigning $(Nothing <: ftype_original ? "nothing" : "first if possible")."
-                    final_val_to_set =
-                        Nothing <: ftype_original ? nothing :
-                        (length(parsed_coords_vec) >= 1 ? convert(non_nothing_ftype, parsed_coords_vec[1]) : nothing)
-                end
-            elseif non_nothing_ftype <: AbstractVector # This is for scalar fields, so this might be an odd case unless it's for single SVector
-                final_val_to_set = convert(non_nothing_ftype, parsed_coords_vec)
-            else
-                @warn "Unhandled type $non_nothing_ftype for coordinate field $true_field_name parsing '$processed_string_val'"
-                final_val_to_set = processed_string_val
-            end
-        else
-            @warn "Tag <$(child_xml_tag_str)> (field '$true_field_name') was string '$processed_string_val'. Unhandled conversion for $non_nothing_ftype (original: $ftype_original). Storing as String if field type allows."
-            if non_nothing_ftype === String || (Nothing <: ftype_original && non_nothing_ftype === String)
-                final_val_to_set = processed_string_val
-            elseif Nothing <: ftype_original
-                final_val_to_set = nothing
-                @warn "Could not parse '$processed_string_val' for optional field $true_field_name::$(ftype_original), setting to nothing."
-            else
-                error(
-                    "Cannot convert string '$processed_string_val' to required type $non_nothing_ftype for non-optional, non-string field $true_field_name.",
-                )
-            end
-        end
-    end
-    setfield!(parent, true_field_name, final_val_to_set)
-end
-
-# -----------------------------------------------------------------------------
-# Helper Function: Handling Polygon Boundaries
-# -----------------------------------------------------------------------------
-function _handle_polygon_boundary!(
-    parent_polygon::KML.Polygon,
-    boundary_xml_node::XML.AbstractXMLNode,
-    boundary_type_sym::Symbol,
-)
-    boundary_children = XML.children(boundary_xml_node)
-
-    element_children_of_boundary = XML.AbstractXMLNode[]
-    for c in boundary_children
-        if nodetype(c) === XML.Element
-            push!(element_children_of_boundary, c)
-        end
-    end
-
-    if boundary_type_sym === :outerBoundaryIs
-        if length(element_children_of_boundary) == 1
-            lr_xml_node = element_children_of_boundary[1]
-            if tagsym(XML.tag(lr_xml_node)) === :LinearRing
-                lr_kml_obj = object(lr_xml_node)
-                if lr_kml_obj isa KML.LinearRing
-                    setfield!(parent_polygon, :outerBoundaryIs, lr_kml_obj)
-                else
-                    @warn "<outerBoundaryIs> content <$(XML.tag(lr_xml_node))> did not parse to KML.LinearRing. Got: $(typeof(lr_kml_obj))"
-                end
-            else
-                @warn "<outerBoundaryIs> for Polygon expected <LinearRing> child, got <$(XML.tag(lr_xml_node))>"
-            end
-        else
-            @warn "<outerBoundaryIs> for Polygon did not contain exactly one element child. Found $(length(element_children_of_boundary)) elements"
-        end
-    elseif boundary_type_sym === :innerBoundaryIs
-        if isempty(element_children_of_boundary)
-            @warn "<innerBoundaryIs> for Polygon contained no element children."
-        else
-            if getfield(parent_polygon, :innerBoundaryIs) === nothing
-                setfield!(parent_polygon, :innerBoundaryIs, KML.LinearRing[])
-            end
-            rings_processed_count = 0
-            for lr_xml_node in element_children_of_boundary
-                if tagsym(XML.tag(lr_xml_node)) === :LinearRing
-                    lr_kml_obj = object(lr_xml_node)
-                    if lr_kml_obj isa KML.LinearRing
-                        push!(getfield(parent_polygon, :innerBoundaryIs), lr_kml_obj)
-                        rings_processed_count += 1
-                    else
-                        @warn "Child <$(XML.tag(lr_xml_node))> of <innerBoundaryIs> did not parse to KML.LinearRing. Got: $(typeof(lr_kml_obj))"
-                    end
-                else
-                    @warn "<innerBoundaryIs> for Polygon contained unexpected element <$(XML.tag(lr_xml_node))>. Only <LinearRing> children are expected."
-                end
-            end
-            if length(element_children_of_boundary) > 1 && rings_processed_count > 0
-                @info "Leniently processed $rings_processed_count LinearRing(s) from a single <innerBoundaryIs> tag that contained $(length(element_children_of_boundary)) elements (KML standard expects one LinearRing per <innerBoundaryIs>)." maxlog =
-                    1
-            elseif rings_processed_count == 0 && !isempty(element_children_of_boundary)
-                @warn "No valid LinearRings were processed from <innerBoundaryIs> that had $(length(element_children_of_boundary)) element children: $([XML.tag(el) for el in element_children_of_boundary])"
-            elseif rings_processed_count != length(element_children_of_boundary)
-                @warn "Not all children of <innerBoundaryIs> were valid LinearRings. Processed $rings_processed_count of $(length(element_children_of_boundary)) elements."
-            end
-        end
-    end
-end
 
 const _TAGSYM_CACHE = Dict{String,Symbol}()
 const _COLON_TO_UNDERSCORE = r":" => "_"
@@ -769,61 +376,17 @@ function tagsym(x::String)
 end
 tagsym(x::XML.AbstractXMLNode) = tagsym(XML.tag(x))
 
-function add_attributes!(o::Union{Object,KMLElement}, source::XML.AbstractXMLNode)
+function add_attributes!(o::KMLElement, source::XML.AbstractXMLNode)
     attr = XML.attributes(source)
     isnothing(attr) && return
 
-    tm = typemap(o)                             # cached Dict
+    tm = typemap(o)
     for (k, v) in attr
-        startswith(k, "xmlns") && continue      # skip namespace decls
+        startswith(k, "xmlns") && continue
         sym = tagsym(k)
-        haskey(tm, sym) || continue             # skip unknown attrs
-        autosetfield!(o, sym, v)
+        haskey(tm, sym) || continue
+        
+        # Use the field assignment system for attributes
+        assign_field!(o, sym, v, k; parse_iso8601_fn=parse_iso8601)
     end
-end
-
-function autosetfield!(o::Union{Object,KMLElement}, sym::Symbol, txt::String)
-    ftype = typemap(o)[sym]
-
-    val = if ftype <: AbstractString
-        txt
-    elseif ftype <: Integer
-        txt == "" ? zero(ftype) : parse(ftype, txt)
-    elseif ftype <: AbstractFloat
-        txt == "" ? zero(ftype) : parse(ftype, txt)
-    elseif ftype <: Bool
-        len = length(txt)
-        if len == 1
-            txt[1] == '1'
-            # KML spec often uses "true"/"false" as well as "1"/"0"
-        elseif len == 4 && # "true"
-               (txt[1] == 't' || txt[1] == 'T') &&
-               (txt[2] == 'r' || txt[2] == 'R') &&
-               (txt[3] == 'u' || txt[3] == 'U') &&
-               (txt[4] == 'e' || txt[4] == 'E')
-            true
-        elseif len == 5 && # "false"
-               (txt[1] == 'f' || txt[1] == 'F') &&
-               (txt[2] == 'a' || txt[2] == 'A') &&
-               (txt[3] == 'l' || txt[3] == 'L') &&
-               (txt[4] == 's' || txt[4] == 'S') &&
-               (txt[5] == 'e' || txt[5] == 'E')
-            false
-        else
-            # Fallback for "0" or other KML-valid representations if necessary,
-            # or treat as false/error for non-standard.
-            # Assuming "0" should also be false if not "1" or "true":
-            false # Or: error("Invalid KML boolean string: '$txt'")
-        end
-    elseif ftype <: Enums.AbstractKMLEnum
-        ftype(txt)
-    elseif fname === :coordinates
-        vec = parse_coordinates_automa(txt)
-        val = (ftype <: Union{Nothing,Tuple}) ? first(vec) : vec
-    else
-        txt   # last‑ditch: store the raw string
-    end
-
-    setfield!(o, sym, val)
-    return
 end

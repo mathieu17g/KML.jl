@@ -5,7 +5,7 @@ import .Core
 import XML
 using OrderedCollections: OrderedDict
 
-# Import Node from the parent module (should be available from parsing.jl)
+# Import Node and _parse_kmlfile from parsing module
 import ..Node, .._parse_kmlfile
 
 # Define Node conversion for KMLFile (only defined here)

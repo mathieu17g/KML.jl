@@ -14,14 +14,14 @@ include("types.jl")             # all KML data types (now modularized)
 include("utils.jl")             # utility functions
 include("Layers.jl")            # layer management functionality
 include("geointerface.jl")      # GeoInterface extensions
-include("parsing.jl")           # XML → struct & struct → XML
+include("parsing.jl")           # XML → struct & struct → XML (includes I/O)
 include("types_integration.jl") # Integration between types and parsing
 include("tables.jl")            # Tables.jl wrapper for Placemarks
+
+# Import from submodules
 using .TablesBridge
 using .Coordinates: coordinate_string, Coord2, Coord3
 using .Layers: list_layers, get_layer_names, get_num_layers
-
-# Remove the manual _parse_kmlfile assignment since it's now in types_integration.jl
 
 # ─── re‑export public names ──────────────────────────────────────────────────
 export KMLFile, LazyKMLFile, Enums, object
@@ -47,7 +47,7 @@ end
 
 function __init__()
     # Handle all available errors!
-    Base.Experimental.register_error_hint(_read_kmz_file_from_path_error_hinter, MethodError)
+    Base.Experimental.register_error_hint(_read_kmz_file_from_path_error_hinter, ErrorException)
 end
 
 end # module
