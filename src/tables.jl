@@ -1,6 +1,6 @@
 module TablesBridge
 
-export PlacemarkTable, list_layers, get_layer_names, get_num_layers
+export PlacemarkTable
 
 using Tables
 import ..Layers: get_layer_info, select_layer
@@ -20,10 +20,8 @@ import ..KML:
     Point,
     LineString,
     Polygon,
-    MultiGeometry,
-    Coord3,
-    Coord2
-import ..Coordinates: parse_coordinates_automa
+    MultiGeometry
+import ..Coordinates: parse_coordinates_automa, Coord2, Coord3  # Import from Coordinates module
 import XML: XML, parse, Node, LazyNode, tag, children, attributes
 using StaticArrays
 using Base.Iterators: flatten

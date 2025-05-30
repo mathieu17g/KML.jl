@@ -1,17 +1,21 @@
-# include("Coordinates.jl")
-using .Coordinates: parse_coordinates_automa, coordinate_string
-import ..Enums
+export Node, _parse_kmlfile
 
-# turn an XML.Node into a KMLFile by finding the <kml> element
-function KMLFile(doc::XML.AbstractXMLNode)
-    i = findfirst(x -> x.tag == "kml", XML.children(doc))
-    isnothing(i) && error("No <kml> tag found in file.")
-    KML.KMLFile(map(KML.object, XML.children(doc[i])))
-end
+# Include the time parsing module
+include("KMLTimeElementParsing.jl")
+
+using TimeZones
+using Dates
+
+# Now we can import from it
+import ..Core: TAG_TO_TYPE, KMLElement, NoAttributes, typemap, _parse_kmlfile
+import ..Enums
+import ..Coordinates: parse_coordinates_automa, coordinate_string, Coord2, Coord3
+using .KMLTimeElementParsing: parse_iso8601
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  I/O glue: read/write KMLFile via XML
 # ─────────────────────────────────────────────────────────────────────────────
+
 # Internal helper: pull the <kml> element out of an XML.Document node
 function _parse_kmlfile(doc::XML.AbstractXMLNode)
     doc_children = XML.children(doc)
@@ -519,9 +523,6 @@ function _convert_and_set_simple_field!(
         )
     end
 end
-
-include("KMLTimeElementParsing.jl")
-using .KMLTimeElementParsing # Import the time parsing functions
 
 # -----------------------------------------------------------------------------
 # Helper Function: Parse and Append to a Vector of Simple Types
