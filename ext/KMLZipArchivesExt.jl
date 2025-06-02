@@ -1,10 +1,12 @@
 module KMLZipArchivesExt
 
-# __precompile__(false)
-
 using ZipArchives
 import KML
-import KML: KMZ_KMxFileType, xmlread, _parse_kmlfile, KMLFile, LazyKMLFile, Node, LazyNode
+import KML.IO: KMZ_KMxFileType, _read_file_from_path, _read_lazy_file_from_path
+import KML.XMLParsing: parse_kmlfile
+import KML.Types: KMLFile, LazyKMLFile
+import KML.XMLSerialization: Node
+import XML
 
 # Helper function to find the main KML file in a KMZ archive
 function _find_kml_entry_in_kmz(zip_reader)
@@ -39,16 +41,16 @@ function _find_kml_entry_in_kmz(zip_reader)
 end
 
 # Existing function for regular KMLFile
-function KML._read_file_from_path(::KMZ_KMxFileType, kmz_path::AbstractString)::KML.KMLFile
+function _read_file_from_path(::KMZ_KMxFileType, kmz_path::AbstractString)::KMLFile
     try
         zip_reader = ZipReader(read(kmz_path))
         kml_entry_name = _find_kml_entry_in_kmz(zip_reader)
 
         kml_content_stream = zip_openentry(zip_reader, kml_entry_name)
-        doc = xmlread(kml_content_stream, Node)
+        doc = XML.read(kml_content_stream, XML.Node)
         close(kml_content_stream)
 
-        return _parse_kmlfile(doc)::KMLFile
+        return parse_kmlfile(doc)::KMLFile
     catch e
         @error "KMZ reading via extension failed for '$kmz_path'." exception = (e, catch_backtrace())
         rethrow()
@@ -56,13 +58,13 @@ function KML._read_file_from_path(::KMZ_KMxFileType, kmz_path::AbstractString)::
 end
 
 # New function for LazyKMLFile
-function KML._read_lazy_file_from_path(::KMZ_KMxFileType, kmz_path::AbstractString)::KML.LazyKMLFile
+function _read_lazy_file_from_path(::KMZ_KMxFileType, kmz_path::AbstractString)::LazyKMLFile
     try
         zip_reader = ZipReader(read(kmz_path))
         kml_entry_name = _find_kml_entry_in_kmz(zip_reader)
 
         kml_content_stream = zip_openentry(zip_reader, kml_entry_name)
-        doc = xmlread(kml_content_stream, LazyNode)
+        doc = XML.read(kml_content_stream, XML.LazyNode)
         close(kml_content_stream)
 
         return LazyKMLFile(doc)

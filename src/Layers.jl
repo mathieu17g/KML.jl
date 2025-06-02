@@ -1,9 +1,10 @@
 module Layers
 
-export list_layers, get_layer_names, get_num_layers
+export list_layers, get_layer_names, get_num_layers, get_layer_info, select_layer
 
 using REPL.TerminalMenus
-import ..KML: KMLFile, LazyKMLFile, Feature, Document, Folder, Placemark, read
+using Base: read  # Import read from Base
+import ..Types: KMLFile, LazyKMLFile, Feature, Document, Folder, Placemark
 import XML: XML, children, tag, attributes
 
 # ──────────────────────────────────────────────────────────────────────────────

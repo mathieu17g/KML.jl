@@ -1,24 +1,104 @@
-module FieldAssignment
+module FieldConversion
 
-export assign_field!, assign_complex_object!, handle_polygon_boundary!
+export convert_field_value, assign_field!, assign_complex_object!, handle_polygon_boundary!, FieldConversionError
 
-using Dates, TimeZones
-using StaticArrays
-import ..Core: KMLElement, typemap
+using Parsers
+using TimeZones
+using Dates
+using StaticArrays  # For StaticArray type checking
+import ..Types
+import ..Types: Coord2, Coord3
 import ..Enums
-import ..Geometries
-import ..Coordinates
-import ..FieldConversion: convert_field_value, convert_field_value_vector, FieldConversionError
-import ..TimeElements
+import ..Coordinates: parse_coordinates_automa
+import ..TimeParsing: parse_iso8601
 import XML
 
-"""
-    assign_field!(parent, field_name::Symbol, value::AbstractString, original_tag::String; parse_iso8601_fn=nothing)
+# ─── Field Conversion Error ──────────────────────────────────────────────────
+struct FieldConversionError <: Exception
+    field_name::Symbol
+    target_type::Type
+    value::String
+    message::String
+end
 
+# ─── Field Conversion Logic ──────────────────────────────────────────────────
+"""
+Convert a string value to the target type for a specific field.
+Handles all KML field type conversions including coordinates, dates, enums, etc.
+"""
+function convert_field_value(value::String, target_type::Type, field_name::Symbol)
+    # Handle empty strings for optional fields
+    if isempty(value) && Nothing <: target_type
+        return nothing
+    end
+    
+    # Get the non-nothing type for conversion
+    actual_type = Base.nonnothingtype(target_type)
+    
+    try
+        # String types
+        if actual_type === String
+            return value
+            
+        # Numeric types
+        elseif actual_type <: Integer
+            return isempty(value) ? zero(actual_type) : Parsers.parse(actual_type, value)
+            
+        elseif actual_type <: AbstractFloat
+            return isempty(value) ? zero(actual_type) : Parsers.parse(actual_type, value)
+            
+        # Boolean types
+        elseif actual_type <: Bool
+            return parse_boolean(value)
+            
+        # Enum types
+        elseif actual_type <: Enums.AbstractKMLEnum
+            return isempty(value) && Nothing <: target_type ? nothing : actual_type(value)
+            
+        # Coordinate types
+        elseif field_name === :coordinates || field_name === :gx_coord
+            return convert_coordinates(value, actual_type, target_type)
+            
+        # Time primitive types
+        elseif is_time_primitive_type(actual_type)
+            return parse_iso8601(value)
+            
+        else
+            throw(FieldConversionError(field_name, target_type, value, 
+                "Unhandled field type: $actual_type"))
+        end
+        
+    catch e
+        if e isa FieldConversionError
+            rethrow(e)
+        else
+            throw(FieldConversionError(field_name, target_type, value, 
+                "Conversion failed: $(e)"))
+        end
+    end
+end
+
+"""
+Convert a string value for a vector field element.
+"""
+function convert_field_value_vector(value::String, element_type::Type, field_name::Symbol)
+    # Handle empty strings for optional elements
+    if isempty(value) && Nothing <: element_type
+        return nothing
+    end
+    
+    actual_type = Base.nonnothingtype(element_type)
+    
+    # For vector elements, use the same conversion logic
+    return convert_field_value(value, actual_type, field_name)
+end
+
+# ─── Field Assignment Logic ──────────────────────────────────────────────────
+"""
 Assign a converted string value to a field in the parent object.
 Handles both scalar and vector fields.
 """
-function assign_field!(parent::KMLElement, field_name::Symbol, value::AbstractString, original_tag::String; parse_iso8601_fn=nothing)
+function assign_field!(parent::Types.KMLElement, field_name::Symbol, value::AbstractString, original_tag::String)
     # Handle special field name mappings
     true_field_name = map_field_name(parent, field_name)
     
@@ -29,7 +109,7 @@ function assign_field!(parent::KMLElement, field_name::Symbol, value::AbstractSt
     
     # Get field type information
     field_type = fieldtype(typeof(parent), true_field_name)
-    non_nothing_type = typemap(typeof(parent))[true_field_name]
+    non_nothing_type = Types.typemap(typeof(parent))[true_field_name]
     
     # Convert to String if needed (for SubString support)
     value_str = String(value)
@@ -38,7 +118,7 @@ function assign_field!(parent::KMLElement, field_name::Symbol, value::AbstractSt
     # and never go through the vector element parsing path
     if true_field_name === :coordinates || true_field_name === :gx_coord
         try
-            converted_value = convert_field_value(value_str, field_type, true_field_name; parse_iso8601_fn=parse_iso8601_fn)
+            converted_value = convert_field_value(value_str, field_type, true_field_name)
             setfield!(parent, true_field_name, converted_value)
         catch e
             if e isa FieldConversionError
@@ -55,11 +135,11 @@ function assign_field!(parent::KMLElement, field_name::Symbol, value::AbstractSt
     
     # Check if it's a vector field (but not coordinates)
     if non_nothing_type <: AbstractVector && is_simple_vector_type(non_nothing_type)
-        assign_vector_element!(parent, true_field_name, field_type, non_nothing_type, value_str, original_tag; parse_iso8601_fn=parse_iso8601_fn)
+        assign_vector_element!(parent, true_field_name, field_type, non_nothing_type, value_str, original_tag)
     else
         # Scalar field
         try
-            converted_value = convert_field_value(value_str, field_type, true_field_name; parse_iso8601_fn=parse_iso8601_fn)
+            converted_value = convert_field_value(value_str, field_type, true_field_name)
             setfield!(parent, true_field_name, converted_value)
         catch e
             if e isa FieldConversionError
@@ -78,11 +158,9 @@ function assign_field!(parent::KMLElement, field_name::Symbol, value::AbstractSt
 end
 
 """
-    assign_complex_object!(parent, child_object::KMLElement, original_tag::String)
-
 Assign a complex KML object to the appropriate field in the parent.
 """
-function assign_complex_object!(parent::KMLElement, child_object::KMLElement, original_tag::String)
+function assign_complex_object!(parent::Types.KMLElement, child_object::Types.KMLElement, original_tag::String)
     child_type = typeof(child_object)
     assigned = false
     parent_type = typeof(parent)
@@ -90,7 +168,7 @@ function assign_complex_object!(parent::KMLElement, child_object::KMLElement, or
     # Try to find a compatible field
     for field_name in fieldnames(parent_type)
         field_type = fieldtype(parent_type, field_name)
-        non_nothing_type = typemap(parent_type)[field_name]
+        non_nothing_type = Types.typemap(parent_type)[field_name]
         
         # Direct type match
         if child_type <: non_nothing_type
@@ -116,12 +194,10 @@ function assign_complex_object!(parent::KMLElement, child_object::KMLElement, or
 end
 
 """
-    handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, boundary_type::Symbol, object_fn)
-
 Special handler for Polygon boundary elements.
 The object_fn parameter should be the object parsing function from the parsing module.
 """
-function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, boundary_type::Symbol, object_fn=nothing)
+function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, boundary_type::Symbol, object_fn)
     # If object_fn not provided, we can't parse LinearRing nodes
     if object_fn === nothing
         @warn "object function not provided to handle_polygon_boundary!"
@@ -136,7 +212,7 @@ function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, b
             lr_node = element_children[1]
             if tagsym(XML.tag(lr_node)) === :LinearRing
                 lr_obj = object_fn(lr_node)
-                if lr_obj isa Geometries.LinearRing
+                if lr_obj isa Types.LinearRing
                     setfield!(polygon, :outerBoundaryIs, lr_obj)
                 else
                     @warn "<outerBoundaryIs> LinearRing didn't parse correctly"
@@ -153,14 +229,14 @@ function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, b
             @warn "<innerBoundaryIs> contained no elements"
         else
             if getfield(polygon, :innerBoundaryIs) === nothing
-                setfield!(polygon, :innerBoundaryIs, Geometries.LinearRing[])
+                setfield!(polygon, :innerBoundaryIs, Types.LinearRing[])
             end
             
             rings_processed = 0
             for lr_node in element_children
                 if tagsym(XML.tag(lr_node)) === :LinearRing
                     lr_obj = object_fn(lr_node)
-                    if lr_obj isa Geometries.LinearRing
+                    if lr_obj isa Types.LinearRing
                         push!(getfield(polygon, :innerBoundaryIs), lr_obj)
                         rings_processed += 1
                     else
@@ -178,11 +254,64 @@ function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, b
     end
 end
 
-# Helper functions
+# ─── Helper Functions ────────────────────────────────────────────────────────
+
+function parse_boolean(value::String)::Bool
+    len = length(value)
+    if len == 1
+        return value[1] == '1'
+    elseif len == 4 && uppercase(value) == "TRUE"
+        return true
+    elseif len == 5 && uppercase(value) == "FALSE"
+        return false
+    else
+        return false  # Default for invalid values
+    end
+end
+
+function convert_coordinates(value::String, actual_type::Type, original_type::Type)
+    parsed_coords = parse_coordinates_automa(value)
+    
+    if isempty(parsed_coords)
+        if Nothing <: original_type
+            return nothing
+        elseif actual_type <: AbstractVector
+            return actual_type()
+        else
+            return nothing
+        end
+    end
+    
+    # Single coordinate types (Point)
+    if actual_type <: Union{Coord2, Coord3}
+        if length(parsed_coords) == 1
+            return convert(actual_type, parsed_coords[1])
+        else
+            # Take first coordinate with warning
+            @warn "Expected 1 coordinate, got $(length(parsed_coords)). Using first."
+            return convert(actual_type, parsed_coords[1])
+        end
+    # Vector coordinate types (LineString, LinearRing)
+    elseif actual_type <: AbstractVector
+        return convert(actual_type, parsed_coords)
+    else
+        throw(FieldConversionError(:coordinates, actual_type, value,
+            "Unhandled coordinate type: $actual_type"))
+    end
+end
+
+function is_time_primitive_type(T::Type)
+    T == Union{TimeZones.ZonedDateTime, Dates.Date, String} ||
+    T == Union{Dates.Date, TimeZones.ZonedDateTime, String} ||
+    T == Union{TimeZones.ZonedDateTime, String, Dates.Date} ||
+    T == Union{String, TimeZones.ZonedDateTime, Dates.Date} ||
+    T == Union{Dates.Date, String, TimeZones.ZonedDateTime} ||
+    T == Union{String, Dates.Date, TimeZones.ZonedDateTime}
+end
 
 function map_field_name(parent, field_name::Symbol)::Symbol
     # Special mappings for specific types
-    if parent isa TimeElements.TimeSpan
+    if parent isa Types.TimeSpan
         if field_name === :begin
             return :begin_
         elseif field_name === :end
@@ -201,7 +330,7 @@ function is_simple_vector_type(vec_type::Type)
     actual_el_type = Base.nonnothingtype(el_type)
     
     # Exclude coordinate types - they need special parsing
-    if actual_el_type <: Union{Coordinates.Coord2, Coordinates.Coord3}
+    if actual_el_type <: Union{Coord2, Coord3}
         return false
     end
     
@@ -228,11 +357,11 @@ function is_time_primitive_element_type(T::Type)
 end
 
 function assign_vector_element!(parent, field_name::Symbol, field_type::Type, vec_type::Type,
-                               value::String, original_tag::String; parse_iso8601_fn=nothing)
+                               value::String, original_tag::String)
     el_type = eltype(vec_type)
     
     try
-        converted_value = convert_field_value_vector(value, el_type, field_name; parse_iso8601_fn=parse_iso8601_fn)
+        converted_value = convert_field_value_vector(value, el_type, field_name)
         
         # Get or initialize the vector
         current_vector = getfield(parent, field_name)
@@ -258,7 +387,7 @@ function assign_vector_element!(parent, field_name::Symbol, field_type::Type, ve
     end
 end
 
-# Helper to convert tag strings to symbols (same as in parsing.jl)
+# Helper to convert tag strings to symbols (same as in parsing)
 const _TAGSYM_CACHE = Dict{String,Symbol}()
 const _COLON_TO_UNDERSCORE = r":" => "_"
 
@@ -268,4 +397,4 @@ function tagsym(x::String)
     end
 end
 
-end # module FieldAssignment
+end # module FieldConversion

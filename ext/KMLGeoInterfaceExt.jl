@@ -1,7 +1,6 @@
-#------------------------------------------------------------------------------
-#  geointerface.jl – adds GeoInterface for KML geometries
-#------------------------------------------------------------------------------
+module KMLGeoInterfaceExt
 
+using KML
 using GeoInterface
 import Base: show
 
@@ -14,13 +13,11 @@ GI.isgeometry(::Type{<:KML.Geometry}) = true
 GI.crs(::KML.Geometry) = GI.default_crs()
 GI.crs(::KML.Placemark) = GI.default_crs()
 
-
 # --- Point ---
 GI.geomtrait(::KML.Point) = GI.PointTrait()
 GI.ngeom(::GI.PointTrait, geom::KML.Point) = 0 # A point has no sub-geometries
 GI.ncoord(::GI.PointTrait, geom::KML.Point) = geom.coordinates === nothing ? 0 : length(geom.coordinates)
 GI.getcoord(::GI.PointTrait, geom::KML.Point, i::Integer) = geom.coordinates[i]
-
 
 # --- LineString ---
 GI.geomtrait(::KML.LineString) = GI.LineStringTrait()
@@ -29,14 +26,12 @@ GI.getgeom(::GI.LineStringTrait, geom::KML.LineString, i::Integer) = KML.Point(c
 GI.ncoord(::GI.LineStringTrait, geom::KML.LineString) = # Number of dimensions
     (geom.coordinates === nothing || isempty(geom.coordinates)) ? 0 : length(geom.coordinates[1])
 
-
 # --- LinearRing ---
 GI.geomtrait(::KML.LinearRing) = GI.LinearRingTrait()
 GI.ngeom(::GI.LinearRingTrait, geom::KML.LinearRing) = geom.coordinates === nothing ? 0 : length(geom.coordinates) # Number of points
 GI.getgeom(::GI.LinearRingTrait, geom::KML.LinearRing, i::Integer) = KML.Point(coordinates=geom.coordinates[i]) # Wrap point in KML.Point
 GI.ncoord(::GI.LinearRingTrait, geom::KML.LinearRing) = # Number of dimensions
     (geom.coordinates === nothing || isempty(geom.coordinates)) ? 0 : length(geom.coordinates[1])
-
 
 # --- Polygon ---
 GI.geomtrait(::KML.Polygon) = GI.PolygonTrait()
@@ -45,7 +40,6 @@ GI.getgeom(::GI.PolygonTrait, geom::KML.Polygon, i::Integer) =
     i == 1 ? geom.outerBoundaryIs : geom.innerBoundaryIs[i-1] # Returns a KML.LinearRing
 GI.ncoord(::GI.PolygonTrait, geom::KML.Polygon) = # Number of dimensions
     (geom.outerBoundaryIs === nothing || geom.outerBoundaryIs.coordinates === nothing || isempty(geom.outerBoundaryIs.coordinates)) ? 0 : length(geom.outerBoundaryIs.coordinates[1])
-
 
 # --- MultiGeometry (Dynamic Trait Dispatch) ---
 function GI.geomtrait(mg::KML.MultiGeometry)
@@ -93,7 +87,6 @@ GI.getgeom(::GI.GeometryCollectionTrait, mg::KML.MultiGeometry, i::Integer) = mg
 GI.ncoord(::GI.GeometryCollectionTrait, mg::KML.MultiGeometry) = # Dimension of the first element, or 0 if empty/mixed might be undefined
     (mg.Geometries === nothing || isempty(mg.Geometries)) ? 0 : GI.ncoord(GI.geomtrait(mg.Geometries[1]), mg.Geometries[1])
 
-
 # --- Placemark feature helpers ---
 GI.isfeature(::KML.Placemark) = true
 GI.isfeature(::Type{KML.Placemark}) = true
@@ -108,7 +101,6 @@ const _PLACEMARK_PROP_FIELDS = Tuple(
 GI.properties(p::KML.Placemark) = (; (f => getfield(p, f) for f in _PLACEMARK_PROP_FIELDS if getfield(p,f) !== nothing)...)
 GI.trait(::KML.Placemark) = GI.FeatureTrait()
 GI.geometry(p::KML.Placemark) = p.Geometry
-
 
 # --- Internal helper for Base.show ---
 function _get_geom_display_info(geom)
@@ -225,3 +217,5 @@ function Base.show(io::IO, g::KML.Geometry)
         end
     end
 end
+
+end # module KMLGeoInterfaceExt

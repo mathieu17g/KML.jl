@@ -1,53 +1,57 @@
 module KML
 
-# ─── base deps ────────────────────────────────────────────────────────────────
+# Base dependencies
 using OrderedCollections: OrderedDict
-import XML: XML, read as xmlread, parse as xmlparse, write as xmlwrite, Node, LazyNode, nodetype
-using InteractiveUtils: subtypes
 using StaticArrays
 using Automa, Parsers
+using TimeZones, Dates
+using InteractiveUtils: subtypes
 
-# ─── split implementation files ──────────────────────────────────────────────
-include("Coordinates.jl")       # coordinate parsing and string generation
-include("Enums.jl")             # KML enum types
-include("types.jl")             # all KML data types (now modularized)
-include("utils.jl")             # utility functions
-include("Layers.jl")            # layer management functionality
-include("geointerface.jl")      # GeoInterface extensions
-include("parsing.jl")           # XML → struct & struct → XML (includes I/O)
-include("types_integration.jl") # Integration between types and parsing
-include("tables.jl")            # Tables.jl wrapper for Placemarks
+# Include all modules in dependency order
+include("enums.jl")
+include("types.jl")
+include("coordinates.jl")
+include("time_parsing.jl")
+include("html_entities.jl")
+include("field_conversion.jl")
+include("xml_parsing.jl")
+include("xml_serialization.jl")
+include("io.jl")
+include("layers.jl")
+include("utils.jl")
+include("tables.jl")
+include("validation.jl")
 
-# Import from submodules
-using .TablesBridge
+# Import for easier access
+using .Types
+using .Enums
 using .Coordinates: coordinate_string, Coord2, Coord3
 using .Layers: list_layers, get_layer_names, get_num_layers
+using .TablesBridge: PlacemarkTable
 
-# ─── re‑export public names ──────────────────────────────────────────────────
-export KMLFile, LazyKMLFile, Enums, object
+# Re-export public API
+export KMLFile, LazyKMLFile, object
 export unwrap_single_part_multigeometry
 export PlacemarkTable, list_layers, get_layer_names, get_num_layers
 export coordinate_string, Coord2, Coord3
 
-# Export all types from types.jl (which re-exports from submodules)
-for name in names(Core; all=false)
-    if name != :Core && name != :eval && name != :include
+# Export all type names from Types module
+for name in names(Types; all=false)
+    if name != :Types && name != :eval && name != :include
         @eval export $name
     end
 end
 
-# Also export from all the submodules loaded by types.jl
-for mod in [TimeElements, Components, Styles, Views, Geometries, Features]
-    for name in names(mod; all=false)
-        if name != nameof(mod)
-            @eval export $name
-        end
+# Export all enum types
+for name in names(Enums; all=false)
+    if name != :Enums && name != :AbstractKMLEnum
+        @eval export $name
     end
 end
 
 function __init__()
-    # Handle all available errors!
-    Base.Experimental.register_error_hint(_read_kmz_file_from_path_error_hinter, ErrorException)
+    # Register error hints for KMZ support
+    Base.Experimental.register_error_hint(IO._read_kmz_file_from_path_error_hinter, ErrorException)
 end
 
-end # module
+end # module KML

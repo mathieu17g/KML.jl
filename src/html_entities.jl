@@ -1,4 +1,6 @@
-module HtmlEntitiesAutoma
+module HtmlEntities
+
+export decode_named_entities
 
 using Automa, Downloads, JSON3, Serialization, Scratch
 
@@ -48,7 +50,7 @@ const NAMED_HTML_ENTITIES = _load_entities()      # loaded once per session
 patterns = [
     re"&#[0-9]+;",        # decimal numeric – leave untouched
     re"&#x[0-9A-Fa-f]+;", # hexadecimal numeric – leave untouched
-    re"&[A-Za-z0-9]+;",   # named entity – decode if it’s in the Dict
+    re"&[A-Za-z0-9]+;",   # named entity – decode if it's in the Dict
     re"[^&]+",            # run of text without '&'
     re"&",                 # a stray '&'
 ]
@@ -75,4 +77,4 @@ function decode_named_entities(str::AbstractString)::String
     return String(take!(out))
 end
 
-end # module
+end # module HtmlEntities

@@ -1,14 +1,11 @@
 module Coordinates
 
-export parse_coordinates_automa, coordinate_string
+export parse_coordinates_automa, coordinate_string, Coord2, Coord3
 
 using StaticArrays
 using Automa
 using Parsers
-
-# Type aliases
-const Coord2 = SVector{2,Float64}
-const Coord3 = SVector{3,Float64}
+import ..Types: Coord2, Coord3
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Coordinate string generation (for writing KML)
@@ -17,6 +14,7 @@ const Coord3 = SVector{3,Float64}
 coordinate_string(x::Tuple) = join(x, ',')
 coordinate_string(x::StaticArraysCore.SVector) = join(x, ',')
 coordinate_string(x::Vector) = join(coordinate_string.(x), '\n')
+coordinate_string(::Nothing) = ""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Coordinate parsing using Automata.jl
@@ -117,8 +115,7 @@ function parse_coordinates_automa(txt::AbstractString)
     else # len is not 0 and not a multiple of 2 or 3
         if !isempty(txt) && !all(isspace, txt)
             snippet = first(txt, min(50, lastindex(txt)))
-            @warn "Parsed $len numbers from \"$snippet…\", which is not a multiple of 2 or 3. Returning empty coordinates." maxlog =
-                1
+            @warn "Parsed $len numbers from \"$snippet…\", which is not a multiple of 2 or 3. Returning empty coordinates." maxlog = 1
         end
         return SVector{0,Float64}[] # Return empty instead of erroring
     end

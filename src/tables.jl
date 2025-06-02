@@ -2,32 +2,17 @@ module TablesBridge
 
 export PlacemarkTable
 
-using Tables
+import Tables
 import ..Layers: get_layer_info, select_layer
-import ..KML:
-    KMLFile,
-    LazyKMLFile,
-    read,
-    Feature,
-    Document,
-    Folder,
-    Placemark,
-    Geometry,
-    object,
-    extract_text_content_fast,
-    unwrap_single_part_multigeometry,
-    LinearRing,
-    Point,
-    LineString,
-    Polygon,
-    MultiGeometry
-import ..Coordinates: parse_coordinates_automa, Coord2, Coord3  # Import from Coordinates module
+import ..Types: KMLFile, LazyKMLFile, Feature, Document, Folder, Placemark, Geometry,
+                LinearRing, Point, LineString, Polygon, MultiGeometry, Coord2, Coord3
+import ..XMLParsing: object, extract_text_content_fast
+import ..HtmlEntities: decode_named_entities
+import ..Coordinates: parse_coordinates_automa
+import ..Utils: unwrap_single_part_multigeometry
 import XML: XML, parse, Node, LazyNode, tag, children, attributes
 using StaticArrays
 using Base.Iterators: flatten
-
-include("HtmlEntitiesAutoma.jl")
-using .HtmlEntitiesAutoma: decode_named_entities
 
 #────────────────────────── Optimized Lazy Iterator Types ──────────────────────────#
 
@@ -253,7 +238,7 @@ PlacemarkTable(
 ) = PlacemarkTable(file, layer, simplify_single_parts)
 
 PlacemarkTable(path::AbstractString; layer::Union{Nothing,String,Integer} = nothing, simplify_single_parts::Bool = false) =
-    PlacemarkTable(read(path, LazyKMLFile); layer = layer, simplify_single_parts = simplify_single_parts)
+    PlacemarkTable(Base.read(path, LazyKMLFile); layer = layer, simplify_single_parts = simplify_single_parts)
 
 #──────────────────────────────── Tables.jl API ──────────────────────────────────#
 Tables.istable(::Type{<:PlacemarkTable}) = true

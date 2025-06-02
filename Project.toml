@@ -7,7 +7,6 @@ version = "0.2.5"
 Automa = "67c07d97-cdcb-5c2c-af73-a7f9c32a568b"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
-GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
@@ -22,10 +21,12 @@ XML = "72c71f33-b9b6-44de-8c94-c961784809e2"
 
 [weakdeps]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
 ZipArchives = "49080126-0e18-4c2a-b176-c102e4b3760c"
 
 [extensions]
 KMLDataFramesExt = "DataFrames"
+KMLGeoInterfaceExt = "GeoInterface"
 KMLZipArchivesExt = "ZipArchives"
 
 [compat]
