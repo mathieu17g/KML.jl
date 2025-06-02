@@ -14,6 +14,9 @@ import XML: XML, parse, Node, LazyNode, tag, children, attributes
 using StaticArrays
 using Base.Iterators: flatten
 
+# Use the parent module's types to ensure consistent display
+const KML = parentmodule(@__MODULE__)
+
 #────────────────────────── Optimized Lazy Iterator Types ──────────────────────────#
 
 # ===== Optimized Eager Collection (FASTEST - Recommended) =====
@@ -77,28 +80,28 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
                 coord_text = extract_text_content_fast(child)
                 coords = parse_coordinates_automa(coord_text)
                 if isempty(coords)
-                    return Point(; coordinates = nothing)
+                    return KML.Point(; coordinates = nothing)
                 else
                     # Take first coordinate for Point
-                    return Point(; coordinates = coords[1])
+                    return KML.Point(; coordinates = coords[1])
                 end
             end
         end
-        return Point(; coordinates = nothing)
+        return KML.Point(; coordinates = nothing)
 
     elseif geom_tag == "LineString"
         for child in children(geom_node)
             if tag(child) == "coordinates"
                 coord_text = extract_text_content_fast(child)
                 coords = parse_coordinates_automa(coord_text)
-                return LineString(; coordinates = isempty(coords) ? nothing : coords)
+                return KML.LineString(; coordinates = isempty(coords) ? nothing : coords)
             end
         end
-        return LineString(; coordinates = nothing)
+        return KML.LineString(; coordinates = nothing)
 
     elseif geom_tag == "Polygon"
         outer_ring = nothing
-        inner_rings = LinearRing[]
+        inner_rings = KML.LinearRing[]
 
         for child in children(geom_node)
             child_tag = tag(child)
@@ -122,10 +125,10 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
         end
 
         if outer_ring !== nothing
-            return Polygon(; outerBoundaryIs = outer_ring, innerBoundaryIs = isempty(inner_rings) ? nothing : inner_rings)
+            return KML.Polygon(; outerBoundaryIs = outer_ring, innerBoundaryIs = isempty(inner_rings) ? nothing : inner_rings)
         else
             # Return empty polygon with default empty LinearRing
-            return Polygon(; outerBoundaryIs = LinearRing())
+            return KML.Polygon(; outerBoundaryIs = KML.LinearRing())
         end
 
     elseif geom_tag == "MultiGeometry"
@@ -138,7 +141,7 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
                 end
             end
         end
-        return MultiGeometry(; Geometries = isempty(geometries) ? nothing : geometries)
+        return KML.MultiGeometry(; Geometries = isempty(geometries) ? nothing : geometries)
     end
 
     return missing
@@ -149,10 +152,10 @@ function parse_linear_ring_lazy(ring_node::XML.AbstractXMLNode)
         if tag(child) == "coordinates"
             coord_text = extract_text_content_fast(child)
             coords = parse_coordinates_automa(coord_text)
-            return LinearRing(; coordinates = isempty(coords) ? nothing : coords)
+            return KML.LinearRing(; coordinates = isempty(coords) ? nothing : coords)
         end
     end
-    return LinearRing(; coordinates = nothing)
+    return KML.LinearRing(; coordinates = nothing)
 end
 
 # Extract only the fields needed for DataFrame

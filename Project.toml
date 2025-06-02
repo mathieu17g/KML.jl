@@ -22,12 +22,14 @@ XML = "72c71f33-b9b6-44de-8c94-c961784809e2"
 [weakdeps]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
+Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 ZipArchives = "49080126-0e18-4c2a-b176-c102e4b3760c"
 
 [extensions]
 KMLDataFramesExt = "DataFrames"
 KMLGeoInterfaceExt = "GeoInterface"
 KMLZipArchivesExt = "ZipArchives"
+KMLMakieExt = "Makie"
 
 [compat]
 Automa = "1.1.0"
