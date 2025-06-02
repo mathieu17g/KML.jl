@@ -111,6 +111,37 @@ function _lazy_top_level_features(file::LazyKMLFile)
 end
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Placemark counting functions (recursive)
+# ──────────────────────────────────────────────────────────────────────────────
+
+function _count_placemarks_recursive(container::Union{Document, Folder})::Int
+    count = 0
+    if container.Features !== nothing
+        for feat in container.Features
+            if feat isa Placemark
+                count += 1
+            elseif feat isa Document || feat isa Folder
+                count += _count_placemarks_recursive(feat)
+            end
+        end
+    end
+    return count
+end
+
+function _count_placemarks_recursive_lazy(node::XML.AbstractXMLNode)::Int
+    count = 0
+    for child in children(node)
+        child_tag = tag(child)
+        if child_tag == "Placemark"
+            count += 1
+        elseif _is_container_tag(child_tag)
+            count += _count_placemarks_recursive_lazy(child)
+        end
+    end
+    return count
+end
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Generic layer info function
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -261,11 +292,10 @@ function select_layer(file::Union{KMLFile,LazyKMLFile}, layer_spec::Union{Nothin
                 if origin isa Vector{Placemark}
                     item_count_str = " ($(length(origin)) placemarks)"
                 elseif origin isa Document || origin isa Folder
-                    num_direct_children = origin.Features !== nothing ? length(origin.Features) : 0
-                    item_count_str = " (Container with $num_direct_children direct items)"
+                    num_placemarks = _count_placemarks_recursive(origin)
+                    item_count_str = " ($num_placemarks placemarks)"
                 elseif origin isa XML.AbstractXMLNode
-                    # For lazy nodes, count children
-                    placemark_count = count(c -> tag(c) == "Placemark", children(origin))
+                    placemark_count = _count_placemarks_recursive_lazy(origin)
                     item_count_str = " ($placemark_count placemarks)"
                 end
                 push!(layer_details_parts, "  [$idx] $name$item_count_str")
@@ -326,12 +356,10 @@ function list_layers(kml_input::Union{AbstractString,KMLFile,LazyKMLFile})
         if origin isa Vector{Placemark}
             item_count_str = " ($(length(origin)) placemarks)"
         elseif origin isa Document || origin isa Folder
-            # Count direct children in Document/Folder
-            num_direct_children = origin.Features !== nothing ? length(origin.Features) : 0
-            item_count_str = " (Container with $num_direct_children direct items)"
+            num_placemarks = _count_placemarks_recursive(origin)
+            item_count_str = " ($num_placemarks placemarks)"
         elseif origin isa XML.AbstractXMLNode
-            # For lazy nodes, count placemarks
-            placemark_count = count(c -> tag(c) == "Placemark", children(origin))
+            placemark_count = _count_placemarks_recursive_lazy(origin)
             item_count_str = " ($placemark_count placemarks)"
         end
         println("  [$idx] $name$item_count_str")
