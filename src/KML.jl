@@ -21,17 +21,22 @@ include("layers.jl")
 include("utils.jl")
 include("tables.jl")
 include("validation.jl")
+include("navigation.jl")
 
 # Import for easier access
 using .Types
 using .Enums
 using .Coordinates: coordinate_string, Coord2, Coord3
+using .XMLSerialization: to_xml, xml_children, Node
+using .XMLParsing: object
 using .Layers: list_layers, get_layer_names, get_num_layers
 using .TablesBridge: PlacemarkTable
 using .Utils: unwrap_single_part_multigeometry
+using .Navigation: children
 
 # Re-export public API
 export KMLFile, LazyKMLFile, object
+export children, to_xml, xml_children
 export unwrap_single_part_multigeometry
 export PlacemarkTable, list_layers, get_layer_names, get_num_layers
 export coordinate_string, Coord2, Coord3
@@ -49,6 +54,49 @@ for name in names(Enums; all=false)
         @eval export $name
     end
 end
+
+# ─── Make KMLFile Iterable and Indexable ────────────────────────────────────
+
+"""
+    iterate(kml::KMLFile)
+
+Iterate over the children of a KMLFile.
+
+# Example
+```julia
+for child in kml
+    println(typeof(child), ": ", child.name)
+end
+```
+"""
+Base.iterate(k::KMLFile, state...) = iterate(k.children, state...)
+Base.length(k::KMLFile) = length(k.children)
+Base.eltype(::Type{KMLFile}) = Union{XML.AbstractXMLNode, KMLElement}
+
+"""
+    kml[i]
+
+Access children of a KMLFile by index.
+
+# Example
+```julia
+doc = kml[1]  # Get first child (usually Document)
+```
+"""
+Base.getindex(k::KMLFile, i) = k.children[i]
+Base.firstindex(k::KMLFile) = 1
+Base.lastindex(k::KMLFile) = length(k.children)
+
+# Optional: Add similar functionality for Document and Folder
+Base.iterate(d::Document, state...) = d.Features === nothing ? nothing : iterate(d.Features, state...)
+Base.length(d::Document) = d.Features === nothing ? 0 : length(d.Features)
+Base.getindex(d::Document, i) = d.Features === nothing ? throw(BoundsError(d, i)) : d.Features[i]
+
+Base.iterate(f::Folder, state...) = f.Features === nothing ? nothing : iterate(f.Features, state...)
+Base.length(f::Folder) = f.Features === nothing ? 0 : length(f.Features)
+Base.getindex(f::Folder, i) = f.Features === nothing ? throw(BoundsError(f, i)) : f.Features[i]
+
+# ─── Initialization ──────────────────────────────────────────────────────────
 
 function __init__()
     # Register error hints for KMZ support

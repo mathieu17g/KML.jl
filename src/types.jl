@@ -154,7 +154,11 @@ Base.:(==)(a::KMLFile, b::KMLFile) = all(getfield(a, f) == getfield(b, f) for f 
 
 function Base.show(io::IO, k::KMLFile)
     print(io, "KMLFile ")
-    printstyled(io, '(', Base.format_bytes(Base.summarysize(k)), ')'; color = :light_black)
+    if get(io, :color, false)
+        printstyled(io, '(', Base.format_bytes(Base.summarysize(k)), ')'; color = :light_black)
+    else
+        print(io, '(', Base.format_bytes(Base.summarysize(k)), ')')
+    end
 end
 
 mutable struct LazyKMLFile
@@ -170,7 +174,11 @@ Base.convert(::Type{KMLFile}, lazy::LazyKMLFile) = KMLFile(lazy)
 
 function Base.show(io::IO, k::LazyKMLFile)
     print(io, "LazyKMLFile ")
-    printstyled(io, "(lazy, ", Base.format_bytes(Base.summarysize(k.root_node)), ')'; color = :light_black)
+    if get(io, :color, false)
+        printstyled(io, "(lazy, ", Base.format_bytes(Base.summarysize(k.root_node)), ')'; color = :light_black)
+    else
+        print(io, "(lazy, ", Base.format_bytes(Base.summarysize(k.root_node)), ')')
+    end
 end
 
 # ─── Time types ──────────────────────────────────────────────────────────────
@@ -249,7 +257,7 @@ end
 
 Base.@kwdef mutable struct Lod <: Object
     @object
-    minLodPixels::Int = 128
+    minLodPixels::Int = 0  # Changed from 128 to match KML spec default
     @option maxLodPixels ::Int
     @option minFadeExtent ::Int
     @option maxFadeExtent ::Int
@@ -283,8 +291,16 @@ end
 
 Base.@kwdef mutable struct gx_LatLonQuad <: Object
     @object
-    coordinates::Vector{Coord2} = [(0, 0), (0, 0), (0, 0), (0, 0)]
-    gx_LatLonQuad(id, targetId, c) = (@assert length(c) == 4; new(id, targetId, c))
+    coordinates::SVector{4, Coord2} = SVector{4}(fill(SVector(0.0, 0.0), 4))
+    
+    # Custom constructor for validation when creating from Vector
+    function gx_LatLonQuad(id, targetId, c::Vector{Coord2})
+        @assert length(c) == 4 "gx:LatLonQuad requires exactly 4 coordinates"
+        new(id, targetId, SVector{4}(c))
+    end
+    
+    # Constructor for SVector input
+    gx_LatLonQuad(id, targetId, c::SVector{4, Coord2}) = new(id, targetId, c)
 end
 
 Base.@kwdef mutable struct ItemIcon <: NoAttributes
@@ -617,7 +633,7 @@ end
 
 Base.@kwdef mutable struct gx_TourControl <: gx_TourPrimitive
     @object
-    gx_playMode::String = "pause"
+    @option gx_playMode::String  # Made optional - no default per KML spec
 end
 
 Base.@kwdef mutable struct gx_Wait <: gx_TourPrimitive
@@ -683,10 +699,20 @@ end
 
 # Show method for KMLElement
 function Base.show(io::IO, o::T) where {names,T<:KMLElement{names}}
-    printstyled(io, T; color = :light_cyan)
+    # Simple rule: only use color if NOT in a DataFrame
+    in_dataframe = (get(io, :compact, false) && get(io, :limit, false)) ||
+                   (get(io, :typeinfo, nothing) === Vector{Any})
+    use_color = !in_dataframe && get(io, :color, false)
+    
+    # Display type name
+    if use_color
+        printstyled(io, T; color = :light_cyan)
+    else
+        print(io, T)
+    end
+    
+    # Display XML representation
     print(io, ": [")
-    # This will use XML.show method via Node conversion
-    # but we can't call Node here due to circular dependency
     print(io, "<", XML.tag(o))
     attrs = XML.attributes(o)
     if !isempty(attrs)

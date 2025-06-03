@@ -15,6 +15,7 @@ coordinate_string(x::Tuple) = join(x, ',')
 coordinate_string(x::StaticArraysCore.SVector) = join(x, ',')
 coordinate_string(x::Vector) = join(coordinate_string.(x), '\n')
 coordinate_string(::Nothing) = ""
+coordinate_string(x::SVector{4, <:Union{Coord2, Coord3}}) = join(coordinate_string.(x), ' ')
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Coordinate parsing using Automata.jl

@@ -30,27 +30,31 @@ function Makie.convert_arguments(P::Type{<:Lines}, lr::KML.LinearRing)
     return ([Point2f(c[1], c[2]) for c in coords],)
 end
 
-# Polygon plotting
+# Polygon plotting with proper hole support using GeometryBasics
 function Makie.convert_arguments(P::Type{<:Poly}, poly::KML.Polygon)
     outer = poly.outerBoundaryIs
     if isnothing(outer) || isnothing(outer.coordinates)
         return ([Point2f(NaN, NaN)],)
     end
     
-    # Convert to Point2f array
-    points = [Point2f(c[1], c[2]) for c in outer.coordinates]
+    # Convert outer boundary
+    outer_points = [Point2f(c[1], c[2]) for c in outer.coordinates]
     
-    # Handle holes if present
+    # Check if we have holes
     if !isnothing(poly.innerBoundaryIs) && !isempty(poly.innerBoundaryIs)
-        # For polygons with holes, we need to return a vector of polygons
-        # where the first is the outer boundary and the rest are holes
+        # Convert holes
         holes = [Point2f.([(c[1], c[2]) for c in ring.coordinates]) 
                  for ring in poly.innerBoundaryIs 
                  if !isnothing(ring.coordinates)]
-        return ([points, holes...],)
+        
+        # Create a GeometryBasics Polygon with holes
+        # GeometryBasics is a dependency of Makie, so this should work
+        gb_poly = Makie.GeometryBasics.Polygon(outer_points, holes)
+        return (gb_poly,)
+    else
+        # No holes, just return the points
+        return (outer_points,)
     end
-    
-    return (points,)
 end
 
 # Recipe for MultiGeometry
@@ -93,10 +97,20 @@ function Makie.convert_arguments(P::Type{<:Lines}, lines::AbstractVector{<:Union
 end
 
 function Makie.convert_arguments(P::Type{<:Poly}, polys::AbstractVector{<:KML.Polygon})
-    all_polys = Vector{Point2f}[]
+    all_polys = []
     for poly in polys
         if !isnothing(poly.outerBoundaryIs) && !isnothing(poly.outerBoundaryIs.coordinates)
-            push!(all_polys, [Point2f(c[1], c[2]) for c in poly.outerBoundaryIs.coordinates])
+            outer_points = [Point2f(c[1], c[2]) for c in poly.outerBoundaryIs.coordinates]
+            
+            if !isnothing(poly.innerBoundaryIs) && !isempty(poly.innerBoundaryIs)
+                holes = [Point2f.([(c[1], c[2]) for c in ring.coordinates]) 
+                         for ring in poly.innerBoundaryIs 
+                         if !isnothing(ring.coordinates)]
+                gb_poly = Makie.GeometryBasics.Polygon(outer_points, holes)
+                push!(all_polys, gb_poly)
+            else
+                push!(all_polys, outer_points)
+            end
         end
     end
     return (all_polys,)

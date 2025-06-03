@@ -98,7 +98,11 @@ const _PLACEMARK_PROP_FIELDS = Tuple(
     )
 )
 
-GI.properties(p::KML.Placemark) = (; (f => getfield(p, f) for f in _PLACEMARK_PROP_FIELDS if getfield(p,f) !== nothing)...)
+GI.properties(p::KML.Placemark) = begin
+    props = (; (f => getfield(p, f) for f in _PLACEMARK_PROP_FIELDS if getfield(p,f) !== nothing)...)
+    # Ensure we always have at least one property for GeoInterface compatibility
+    isempty(props) ? (hasGeometry = p.Geometry !== nothing,) : props
+end
 GI.trait(::KML.Placemark) = GI.FeatureTrait()
 GI.geometry(p::KML.Placemark) = p.Geometry
 
@@ -126,22 +130,36 @@ function _get_geom_display_info(geom)
     return is_3d, coord_dim
 end
 
-# --- SIMPLIFIED Base.show for KML.Geometry (NO COLORS) ---
+# Enhanced show for geometries with DataFrame-aware coloring
 function Base.show(io::IO, g::KML.Geometry)
     trait = GI.geomtrait(g)
     trait_name_str = replace(string(nameof(typeof(trait))), "Trait" => "")
-
+    
     is_3d_disp, coord_dim_disp = _get_geom_display_info(g)
     zm_suffix = is_3d_disp ? " Z" : ""
-
-    print(io, trait_name_str)
-    print(io, zm_suffix)
-
+    
+    # Smart color detection
+    in_dataframe = (get(io, :compact, false) && get(io, :limit, false)) ||
+                   (get(io, :typeinfo, nothing) === Vector{Any})
+    color_requested = get(io, :color, false)
+    
+    # Never use color in DataFrame cells
+    use_color = !in_dataframe && color_requested
+    
+    # Type name with optional color
+    if use_color
+        printstyled(io, trait_name_str, zm_suffix; color = :light_cyan)
+    else
+        print(io, trait_name_str, zm_suffix)
+    end
+    
+    # Summary information
     summary_parts = String[]
-
+    
     if trait isa GI.PointTrait
         if g.coordinates !== nothing
-            push!(summary_parts, "($(join(g.coordinates, ", ")))")
+            coord_str = "($(join(g.coordinates, ", ")))"
+            push!(summary_parts, coord_str)  # No color in summary parts
         else
             push!(summary_parts, "(empty)")
         end
@@ -151,7 +169,8 @@ function Base.show(io::IO, g::KML.Geometry)
         n = GI.ngeom(trait, g)
         item_name_singular = "part"
         item_name_plural = "parts"
-
+        
+        # Determine specific item names
         if n > 0
             local first_sub_geom_obj
             try
@@ -159,34 +178,42 @@ function Base.show(io::IO, g::KML.Geometry)
             catch
                 first_sub_geom_obj = nothing
             end
-
+            
             if trait isa GI.MultiPolygonTrait || trait isa GI.PolygonTrait
                 item_name_singular = "ring"; item_name_plural = "rings"
-                if trait isa GI.MultiPolygonTrait && first_sub_geom_obj isa KML.Polygon # Check type
+                if trait isa GI.MultiPolygonTrait && first_sub_geom_obj isa KML.Polygon
                     item_name_singular = "polygon"
                     item_name_plural = "polygons"
                 end
             elseif trait isa GI.MultiCurveTrait || trait isa GI.LineStringTrait || trait isa GI.LinearRingTrait
-                item_name_singular = "point"; item_name_plural = "points" # ngeom for LineString/LinearRing is num points
-                if trait isa GI.MultiCurveTrait && first_sub_geom_obj isa KML.LineString # Check type
+                item_name_singular = "point"; item_name_plural = "points"
+                if trait isa GI.MultiCurveTrait && first_sub_geom_obj isa KML.LineString
                     item_name_singular = "linestring"
                     item_name_plural = "linestrings"
                 end
             elseif trait isa GI.MultiPointTrait
-                 item_name_singular = "point"; item_name_plural = "points"
+                item_name_singular = "point"; item_name_plural = "points"
             end
         end
-        push!(summary_parts, "with $n " * (n == 1 ? item_name_singular : item_name_plural))
-
+        
+        count_str = "with $n " * (n == 1 ? item_name_singular : item_name_plural)
+        push!(summary_parts, count_str)  # No color in summary parts
     elseif trait isa GI.GeometryCollectionTrait
         n = GI.ngeom(trait, g)
-        push!(summary_parts, "with $n " * (n == 1 ? "geometry" : "geometries"))
+        count_str = "with $n " * (n == 1 ? "geometry" : "geometries")
+        push!(summary_parts, count_str)  # No color in summary parts
     end
-
+    
     if !isempty(summary_parts)
-        print(io, " ", join(summary_parts, ", "))
+        # Print the summary with optional color on the whole thing
+        if use_color
+            printstyled(io, " ", join(summary_parts, ", "); color = :green)
+        else
+            print(io, " ", join(summary_parts, ", "))
+        end
     end
-
+    
+    # Preview coordinates
     preview_pt_strings = String[]
     if (trait isa GI.LineStringTrait || trait isa GI.LinearRingTrait) &&
        hasfield(typeof(g), :coordinates) && g.coordinates !== nothing && GI.ngeom(trait, g) > 0
@@ -197,13 +224,20 @@ function Base.show(io::IO, g::KML.Geometry)
                 push!(preview_pt_strings, "($(join(pt_obj.coordinates, " ")))")
             end
         end
+        
         if !isempty(preview_pt_strings)
-             print(io, " (", join(preview_pt_strings, ", "), (GI.ngeom(trait, g) > length(preview_pt_strings) ? ", ..." : ""), ")")
+            preview_str = " (" * join(preview_pt_strings, ", ") * 
+                         (GI.ngeom(trait, g) > length(preview_pt_strings) ? ", ..." : "") * ")"
+            if use_color
+                printstyled(io, preview_str; color = :light_gray)
+            else
+                print(io, preview_str)
+            end
         end
     elseif trait isa GI.PolygonTrait && GI.ngeom(trait, g) > 0
         outer_ring_obj = GI.getgeom(trait, g, 1)
-        if outer_ring_obj isa KML.LinearRing && hasfield(typeof(outer_ring_obj), :coordinates) && outer_ring_obj.coordinates !== nothing &&
-           GI.ngeom(GI.LinearRingTrait(), outer_ring_obj) > 0
+        if outer_ring_obj isa KML.LinearRing && hasfield(typeof(outer_ring_obj), :coordinates) && 
+           outer_ring_obj.coordinates !== nothing && GI.ngeom(GI.LinearRingTrait(), outer_ring_obj) > 0
             coords_to_show = min(GI.ngeom(GI.LinearRingTrait(), outer_ring_obj), 2)
             for i in 1:coords_to_show
                 pt_obj = GI.getgeom(GI.LinearRingTrait(), outer_ring_obj, i)
@@ -211,8 +245,15 @@ function Base.show(io::IO, g::KML.Geometry)
                     push!(preview_pt_strings, "($(join(pt_obj.coordinates, " ")))")
                 end
             end
+            
             if !isempty(preview_pt_strings)
-                print(io, " (outer: ", join(preview_pt_strings, ", "), (GI.ngeom(GI.LinearRingTrait(), outer_ring_obj) > length(preview_pt_strings) ? ", ..." : ""), ")")
+                preview_str = " (outer: " * join(preview_pt_strings, ", ") * 
+                             (GI.ngeom(GI.LinearRingTrait(), outer_ring_obj) > length(preview_pt_strings) ? ", ..." : "") * ")"
+                if use_color
+                    printstyled(io, preview_str; color = :light_gray)
+                else
+                    print(io, preview_str)
+                end
             end
         end
     end

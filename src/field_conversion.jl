@@ -26,7 +26,7 @@ end
 Convert a string value to the target type for a specific field.
 Handles all KML field type conversions including coordinates, dates, enums, etc.
 """
-function convert_field_value(value::String, target_type::Type, field_name::Symbol)
+function convert_field_value(value::String, target_type::Type, field_name::Symbol, parent_type::Type=Nothing)
     # Handle empty strings for optional fields
     if isempty(value) && Nothing <: target_type
         return nothing
@@ -57,7 +57,7 @@ function convert_field_value(value::String, target_type::Type, field_name::Symbo
             
         # Coordinate types
         elseif field_name === :coordinates || field_name === :gx_coord
-            return convert_coordinates(value, actual_type, target_type)
+            return convert_coordinates(value, actual_type, target_type, parent_type)
             
         # Time primitive types
         elseif is_time_primitive_type(actual_type)
@@ -118,7 +118,7 @@ function assign_field!(parent::Types.KMLElement, field_name::Symbol, value::Abst
     # and never go through the vector element parsing path
     if true_field_name === :coordinates || true_field_name === :gx_coord
         try
-            converted_value = convert_field_value(value_str, field_type, true_field_name)
+            converted_value = convert_field_value(value_str, field_type, true_field_name, typeof(parent))
             setfield!(parent, true_field_name, converted_value)
         catch e
             if e isa FieldConversionError
@@ -269,7 +269,22 @@ function parse_boolean(value::String)::Bool
     end
 end
 
-function convert_coordinates(value::String, actual_type::Type, original_type::Type)
+function convert_coordinates(value::String, actual_type::Type, original_type::Type, parent_type::Type=Nothing)
+    
+    # Handle empty string early
+    if isempty(value)
+        if Nothing <: original_type
+            return nothing
+        elseif actual_type <: SVector{4}
+            # Return default 4 coordinates for gx:LatLonQuad
+            return SVector{4}(fill(SVector(0.0, 0.0), 4))
+        elseif actual_type <: AbstractVector
+            return actual_type()
+        else
+            return nothing
+        end
+    end
+    
     parsed_coords = parse_coordinates_automa(value)
     
     if isempty(parsed_coords)
@@ -277,9 +292,21 @@ function convert_coordinates(value::String, actual_type::Type, original_type::Ty
             return nothing
         elseif actual_type <: AbstractVector
             return actual_type()
+        elseif actual_type <: SVector{4}
+            # Return default 4 coordinates for gx:LatLonQuad
+            return SVector{4}(fill(SVector(0.0, 0.0), 4))
         else
             return nothing
         end
+    end
+    
+    # Special handling for SVector{4, Coord2} (gx:LatLonQuad)
+    if actual_type <: SVector{4}
+        if length(parsed_coords) != 4
+            throw(FieldConversionError(:coordinates, actual_type, value,
+                "gx:LatLonQuad requires exactly 4 coordinates, got $(length(parsed_coords))"))
+        end
+        return SVector{4}(parsed_coords)
     end
     
     # Single coordinate types (Point)

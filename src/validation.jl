@@ -6,6 +6,8 @@ import ..Types: KMLElement, Geometry, Point, LineString, LinearRing, Polygon, Mu
                 Document, Folder, Feature, Placemark, Coord2, Coord3
 
 # ─── Coordinate Validation ───────────────────────────────────────────────────
+const MAX_ALTITUDE_METERS = 50_000 # 50km
+
 """
 Validate coordinate bounds and format.
 Returns (is_valid, error_message)
@@ -25,7 +27,7 @@ function validate_coordinates(coords::Union{Coord2, Coord3})
     if length(coords) == 3
         alt = coords[3]
         # Altitude can technically be any value, but warn on extremes
-        if abs(alt) > 50_000  # 50km
+        if abs(alt) > MAX_ALTITUDE_METERS  
             @warn "Altitude $alt meters seems extreme"
         end
     end

@@ -20,9 +20,15 @@ function extract_text_content_fast(node::XML.AbstractXMLNode)
     text_parts = String[]
     for child in XML.children(node)
         if XML.nodetype(child) === XML.Text
-            push!(text_parts, XML.value(child))
+            text_value = XML.value(child)
+            if text_value !== nothing
+                push!(text_parts, text_value)
+            end
         elseif XML.nodetype(child) === XML.CData
-            push!(text_parts, XML.value(child))
+            cdata_value = XML.value(child)
+            if cdata_value !== nothing
+                push!(text_parts, cdata_value)
+            end
         end
     end
     return join(text_parts)
@@ -31,14 +37,20 @@ end
 # ─── Parse KMLFile from XML document ─────────────────────────────────────────
 function parse_kmlfile(doc::XML.AbstractXMLNode)
     doc_children = XML.children(doc)
-    i = findfirst(x -> x.tag == "kml", doc_children)
+    i = findfirst(x -> XML.nodetype(x) === XML.Element && XML.tag(x) == "kml", doc_children)
     isnothing(i) && error("No <kml> tag found in file.")
     kml_element = doc_children[i]
     xml_children = XML.children(kml_element)
-    kml_children = Vector{Union{XML.AbstractXMLNode,KMLElement}}(undef, length(xml_children))
-    for (idx, child_node) in enumerate(xml_children)
-        kml_children[idx] = object(child_node)
+    
+    # Only process element nodes
+    kml_children = Vector{Union{XML.AbstractXMLNode,KMLElement}}()
+    for child_node in xml_children
+        if XML.nodetype(child_node) === XML.Element
+            push!(kml_children, object(child_node))
+        end
+        # Skip non-element nodes (text, comments, etc.)
     end
+    
     KMLFile(kml_children)
 end
 
