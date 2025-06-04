@@ -7,7 +7,7 @@ using TimeZones
 using Dates
 using StaticArrays  # For StaticArray type checking
 import ..Types
-import ..Types: Coord2, Coord3
+import ..Types: Coord2, Coord3, tagsym
 import ..Enums
 import ..Coordinates: parse_coordinates_automa
 import ..TimeParsing: parse_iso8601
@@ -411,16 +411,6 @@ function assign_vector_element!(parent, field_name::Symbol, field_type::Type, ve
         else
             rethrow(e)
         end
-    end
-end
-
-# Helper to convert tag strings to symbols (same as in parsing)
-const _TAGSYM_CACHE = Dict{String,Symbol}()
-const _COLON_TO_UNDERSCORE = r":" => "_"
-
-function tagsym(x::String)
-    get!(_TAGSYM_CACHE, x) do
-        Symbol(replace(x, _COLON_TO_UNDERSCORE))
     end
 end
 

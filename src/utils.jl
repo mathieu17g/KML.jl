@@ -242,13 +242,13 @@ end
 Extract all style definitions from a container.
 """
 function extract_styles(container::Union{Document, KMLFile})
-    styles = Types.StyleSelector[]
+    styles = StyleSelector[]
     
     if container isa Document && container.StyleSelectors !== nothing
         append!(styles, container.StyleSelectors)
     elseif container isa KMLFile
         for child in container.children
-            if child isa Types.StyleSelector
+            if child isa StyleSelector
                 push!(styles, child)
             elseif child isa Document && child.StyleSelectors !== nothing
                 append!(styles, child.StyleSelectors)

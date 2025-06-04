@@ -6,7 +6,7 @@ using TimeZones
 using Dates
 import XML
 import XML: nodetype
-import ..Types: KMLElement, TAG_TO_TYPE, typemap, KMLFile, NoAttributes
+import ..Types: KMLElement, TAG_TO_TYPE, typemap, KMLFile, NoAttributes, tagsym
 import ..Types  # Import all types
 import ..Enums
 import ..FieldConversion: assign_field!, assign_complex_object!, handle_polygon_boundary!
@@ -217,13 +217,6 @@ end
 
 # ─── Helper functions ────────────────────────────────────────────────────────
 
-const _TAGSYM_CACHE = Dict{String,Symbol}()
-const _COLON_TO_UNDERSCORE = r":" => "_"
-function tagsym(x::String)
-    get!(_TAGSYM_CACHE, x) do
-        Symbol(replace(x, _COLON_TO_UNDERSCORE))
-    end
-end
 tagsym(x::XML.AbstractXMLNode) = tagsym(XML.tag(x))
 
 function add_attributes!(o::KMLElement, source::XML.AbstractXMLNode)

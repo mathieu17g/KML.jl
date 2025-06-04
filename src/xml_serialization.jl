@@ -12,7 +12,7 @@ import ..Coordinates: coordinate_string
 typetag(T::Type) = replace(string(nameof(T)), "_" => ":")
 
 # ─── KMLElement → Node conversion ────────────────────────────────────────────
-Node(o::T) where {T<:Enums.AbstractKMLEnum} = XML.Node(XML.Element, typetag(T), nothing, nothing, [XML.Node(XML.Text, o.value, nothing, nothing, XML.Node[])])
+Node(o::T) where {T<:Enums.AbstractKMLEnum} = XML.Node(XML.Element, typetag(T), nothing, nothing, [XML.Node(XML.Text, nothing, nothing, o.value, XML.Node[])])
 
 function Node(o::T) where {names,T<:KMLElement{names}}
     tag = typetag(T)
@@ -42,7 +42,7 @@ function Node(o::T) where {names,T<:KMLElement{names}}
             push!(children, XML.Node(XML.Element, "outerBoundaryIs", nothing, nothing, [Node(val)]))
         elseif field == :coordinates
             # Create text node with coordinate string
-            coord_text = XML.Node(XML.Text, coordinate_string(val))
+            coord_text = XML.Node(XML.Text, nothing, nothing, coordinate_string(val), XML.Node[])
             push!(children, XML.Node(XML.Element, "coordinates", nothing, nothing, [coord_text]))
         elseif val isa KMLElement
             push!(children, Node(val))
@@ -57,13 +57,13 @@ function Node(o::T) where {names,T<:KMLElement{names}}
                 if item isa KMLElement
                     push!(children, Node(item))
                 else
-                    text_node = XML.Node(XML.Text, string(item))
+                    text_node = XML.Node(XML.Text, nothing, nothing, string(item), XML.Node[])
                     push!(children, XML.Node(XML.Element, string(field), nothing, nothing, [text_node]))
                 end
             end
         else
             # Create text node for simple values
-            text_node = XML.Node(XML.Text, string(val))
+            text_node = XML.Node(XML.Text, nothing, nothing, string(val), XML.Node[])
             push!(children, XML.Node(XML.Element, string(field), nothing, nothing, [text_node]))
         end
     end
@@ -86,7 +86,7 @@ function Node(k::KMLFile)
         else
             # This shouldn't happen, but log a warning
             @warn "Unexpected child type in KMLFile" type=typeof(child)
-            XML.Node(XML.Text, string(child), nothing, nothing, XML.Node[])
+            XML.Node(XML.Text, nothing, nothing, string(child), XML.Node[])
         end
     end
 

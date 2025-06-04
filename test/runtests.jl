@@ -69,36 +69,19 @@ end
 
     temp = tempname() * ".kml"
 
+    # Write the file
+    KML.write(temp, file)
+    
+    # Read it back
+    file2 = read(temp, KMLFile)
+    
+    @test file == file2
+    
+    # Clean up - wrapped in try/catch for Windows
     try
-        # Write the file
-        KML.write(temp, file)
-        
-        # Debug: Check file sizes AFTER writing
-        original_size = filesize(joinpath(@__DIR__, "example.kml"))
-        written_size = filesize(temp)
-        println("Original file size: $original_size bytes")
-        println("Written file size: $written_size bytes")
-        
-        # Debug: Read and print the written file content AFTER writing
-        written_content = read(temp, String)
-        println("Written file content (first 500 chars):")
-        println(written_content[1:min(500, end)])
-
-        # Now read it back
-        file2 = read(temp, KMLFile)
-        
-        # Debug: Check what's in each KMLFile
-        println("\nOriginal KMLFile children: ", length(file.children))
-        println("Roundtrip KMLFile children: ", length(file2.children))
-        
-        @test file == file2
-    finally
-        # Clean up
-        try
-            rm(temp, force = true)
-        catch
-            # Ignore deletion errors
-        end
+        rm(temp, force = true)
+    catch
+        # Ignore cleanup errors
     end
 end
 
@@ -150,19 +133,19 @@ end
 
 @testset "Coordinate Parsing" begin
     # Test various coordinate formats
-    coords = KML.parse_coordinates_automa("1,2")
+    coords = KML.Coordinates.parse_coordinates_automa("1,2")
     @test coords == [SVector(1.0, 2.0)]
 
-    coords = KML.parse_coordinates_automa("1,2,3")
+    coords = KML.Coordinates.parse_coordinates_automa("1,2,3")
     @test coords == [SVector(1.0, 2.0, 3.0)]
 
-    coords = KML.parse_coordinates_automa("1,2 3,4")
+    coords = KML.Coordinates.parse_coordinates_automa("1,2 3,4")
     @test coords == [SVector(1.0, 2.0), SVector(3.0, 4.0)]
 
-    coords = KML.parse_coordinates_automa("1,2,3 4,5,6")
+    coords = KML.Coordinates.parse_coordinates_automa("1,2,3 4,5,6")
     @test coords == [SVector(1.0, 2.0, 3.0), SVector(4.0, 5.0, 6.0)]
 
     # Test with whitespace variations
-    coords = KML.parse_coordinates_automa("  1.5 , 2.5  \n  3.5 , 4.5  ")
+    coords = KML.Coordinates.parse_coordinates_automa("  1.5 , 2.5  \n  3.5 , 4.5  ")
     @test coords == [SVector(1.5, 2.5), SVector(3.5, 4.5)]
 end

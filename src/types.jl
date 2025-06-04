@@ -39,7 +39,6 @@ const Coord3 = SVector{3,Float64}
 
 # ─── Base infrastructure ─────────────────────────────────────────────────────
 const TAG_TO_TYPE = Dict{Symbol,DataType}()
-const _FIELD_MAP_CACHE = IdDict{DataType,Dict{Symbol,Type}}()
 
 macro def(name, definition)
     quote
@@ -80,16 +79,6 @@ abstract type gx_TourPrimitive <: Object end
 abstract type AbstractUpdateOperation <: Object end
 
 # ─── Helper utilities ────────────────────────────────────────────────────────
-function typemap(::Type{T}) where {T<:KMLElement}
-    get!(_FIELD_MAP_CACHE, T) do
-        field_names = fieldnames(T)
-        field_types = fieldtypes(T)
-        Dict(fn => Base.nonnothingtype(ft) for (fn, ft) in zip(field_names, field_types))
-    end
-end
-
-typemap(o::KMLElement) = typemap(typeof(o))
-
 Base.:(==)(a::T, b::T) where {T<:KMLElement} = all(getfield(a, f) == getfield(b, f) for f in fieldnames(T))
 
 # XML interface
@@ -726,5 +715,151 @@ end
 
 # Initialize TAG_TO_TYPE
 _populate_tag_to_type()
+
+# ─── XML Tag to Symbol Conversion (Thread-Safe) ─────────────────────────────
+# Pre-populated caches for thread safety and performance
+
+function _create_tagsym_cache()
+    cache = Dict{String,Symbol}()
+    
+    # Helper to add both underscore and colon versions
+    function add_tag!(cache, str::String)
+        sym = Symbol(str)
+        cache[str] = sym
+        # Also add colon version if it contains underscore
+        if occursin('_', str)
+            colon_version = replace(str, "_" => ":")
+            cache[colon_version] = sym
+        end
+    end
+    
+    # 1. Add all known KML element tags
+    kml_tags = [
+        "kml", "Document", "Folder", "Placemark", "NetworkLink",
+        "Point", "LineString", "LinearRing", "Polygon", "MultiGeometry",
+        "Model", "gx_Track", "gx_MultiTrack",
+        "Style", "StyleMap", "StyleMapPair", "LineStyle", "PolyStyle", 
+        "IconStyle", "LabelStyle", "ListStyle", "BalloonStyle",
+        "Camera", "LookAt", "GroundOverlay", "ScreenOverlay", "PhotoOverlay",
+        "TimeStamp", "TimeSpan", "gx_Tour", "gx_Playlist", "gx_AnimatedUpdate",
+        "gx_FlyTo", "gx_SoundCue", "gx_TourControl", "gx_Wait",
+        "Update", "Create", "Delete", "Change",
+        "Link", "Icon", "Orientation", "Location", "Scale", "Lod",
+        "LatLonBox", "LatLonAltBox", "Region", "gx_LatLonQuad",
+        "ItemIcon", "ViewVolume", "ImagePyramid", "Snippet",
+        "Data", "SimpleData", "SchemaData", "ExtendedData",
+        "Alias", "ResourceMap", "SimpleField", "Schema",
+        "atom_author", "atom_link",
+        # Special mappings from TAG_TO_TYPE
+        "overlayXY", "screenXY", "rotationXY", "size", "hotSpot",
+        "snippet", "Url", "Pair",
+        # Structural tags
+        "outerBoundaryIs", "innerBoundaryIs",
+        # gx: prefixed versions
+        "gx:Track", "gx:MultiTrack", "gx:Tour", "gx:Playlist",
+        "gx:AnimatedUpdate", "gx:FlyTo", "gx:SoundCue", "gx:TourControl",
+        "gx:Wait", "gx:LatLonQuad", "gx:altitudeMode", "gx:altitudeOffset",
+        "gx:angles", "gx:balloonVisibility", "gx:coord", "gx:delayedStart",
+        "gx:drawOrder", "gx:duration", "gx:flyToMode", "gx:interpolate",
+        "gx:labelVisibility", "gx:outerColor", "gx:outerWidth", 
+        "gx:physicalWidth", "gx:playMode"
+    ]
+    
+    for tag in kml_tags
+        add_tag!(cache, tag)
+    end
+    
+    # 2. Add all field names from all KML types
+    for T in all_concrete_subtypes(KMLElement)
+        for field in fieldnames(T)
+            field_str = string(field)
+            cache[field_str] = field
+            
+            # Handle special underscore fields
+            if endswith(field_str, "_")
+                # For fields like "begin_" -> also map "begin"
+                base_name = field_str[1:end-1]
+                cache[base_name] = field
+            end
+        end
+    end
+    
+    # 3. Add enum names from Enums module
+    enum_names = [
+        "altitudeMode", "gx_altitudeMode", "refreshMode", "viewRefreshMode",
+        "shape", "gridOrigin", "displayMode", "listItemType", "units",
+        "itemIconState", "styleState", "colorMode", "flyToMode"
+    ]
+    
+    for enum_name in enum_names
+        add_tag!(cache, enum_name)
+    end
+    
+    # 4. Add field names that might appear as tags
+    field_tags = [
+        "name", "visibility", "open", "address", "phoneNumber", "description",
+        "styleUrl", "color", "width", "scale", "heading", "tilt", "roll",
+        "longitude", "latitude", "altitude", "range", "href", "refreshInterval",
+        "viewRefreshTime", "viewBoundScale", "viewFormat", "httpQuery",
+        "x", "y", "z", "w", "h", "xunits", "yunits", "north", "south", "east", "west",
+        "rotation", "minAltitude", "maxAltitude", "minLodPixels", "maxLodPixels",
+        "minFadeExtent", "maxFadeExtent", "leftFov", "rightFov", "bottomFov", "topFov",
+        "near", "tileSize", "maxWidth", "maxHeight", "bgColor", "textColor", "text",
+        "key", "value", "displayName", "state", "listItemType", "targetHref", "sourceHref",
+        "type", "rel", "hreflang", "title", "length", "email", "uri", "targetId",
+        "id", "when", "begin", "end", "coordinates", "extrude", "tessellate", "fill", "outline"
+    ]
+    
+    for tag in field_tags
+        cache[tag] = Symbol(tag)
+    end
+    
+    # 5. Special mappings
+    cache["begin"] = :begin_
+    cache["end"] = :end_
+    cache["Url"] = :Link  # Legacy mapping
+    cache["Pair"] = :StyleMapPair
+    cache["atom:author"] = :atom_author
+    cache["atom:link"] = :atom_link
+    
+    return cache
+end
+
+function _create_field_map_cache()
+    cache = IdDict{DataType,Dict{Symbol,Type}}()
+    
+    # Pre-populate for all concrete KML types
+    for T in all_concrete_subtypes(KMLElement)
+        field_names = fieldnames(T)
+        field_types = fieldtypes(T)
+        field_map = Dict{Symbol,Type}()
+        
+        for (fn, ft) in zip(field_names, field_types)
+            field_map[fn] = Base.nonnothingtype(ft)
+        end
+        
+        cache[T] = field_map
+    end
+    
+    return cache
+end
+
+# Create the caches at module initialization
+const _TAGSYM_CACHE = _create_tagsym_cache()
+const _FIELD_MAP_CACHE = _create_field_map_cache()
+
+# Thread-safe, read-only access functions
+function tagsym(x::String)
+    get(_TAGSYM_CACHE, x) do
+        # Fallback for truly unknown tags (shouldn't happen with KML)
+        Symbol(replace(x, r":" => "_"))
+    end
+end
+
+function typemap(::Type{T}) where {T<:KMLElement}
+    # Direct lookup - will throw KeyError if type not found (shouldn't happen)
+    _FIELD_MAP_CACHE[T]
+end
+typemap(o::KMLElement) = typemap(typeof(o))
 
 end # module Types
