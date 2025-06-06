@@ -6,6 +6,7 @@ using REPL.TerminalMenus
 using Base: read  # Import read from Base
 import ..Types: KMLFile, LazyKMLFile, Feature, Document, Folder, Placemark
 import XML: XML, children, tag, attributes
+import ..XMLParsing: find_immediate_child, for_each_immediate_child, extract_text_content_fast
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Eager (KMLFile) helpers
@@ -44,12 +45,11 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 
 function _find_kml_element(doc::XML.AbstractXMLNode)
-    for child in children(doc)
-        if tag(child) == "kml"
-            return child
-        end
+    kml_elem = find_immediate_child(doc) do child
+        tag(child) == "kml"
     end
-    error("No <kml> tag found in LazyKMLFile")
+    isnothing(kml_elem) && error("No <kml> tag found in LazyKMLFile")
+    return kml_elem
 end
 
 function _is_feature_tag(tag_name::String)
@@ -62,21 +62,15 @@ function _is_container_tag(tag_name::String)
 end
 
 function _get_name_from_node(node::XML.AbstractXMLNode)
-    # Use direct iteration to find name without allocating children vector
-    for child in node  # Direct iteration - but only look at immediate children
-        if XML.nodetype(child) === XML.Element && tag(child) == "name"
-            # Found name element, extract text
-            for textnode in child
-                if XML.nodetype(textnode) === XML.Text
-                    return XML.value(textnode)
-                end
-            end
-            return nothing  # name element found but no text
-        elseif XML.nodetype(child) === XML.Element
-            # Stop at first non-name element to avoid deep traversal
-            break
-        end
+    name_node = find_immediate_child(node) do child
+        XML.nodetype(child) === XML.Element && tag(child) == "name"
     end
+    
+    if name_node !== nothing
+        # Found name element, extract text using our existing function
+        return extract_text_content_fast(name_node)
+    end
+    
     return nothing
 end
 
@@ -84,7 +78,7 @@ function _lazy_top_level_features(file::LazyKMLFile)
     kml_elem = _find_kml_element(file.root_node)
     features = []
 
-    for child in children(kml_elem)
+    for_each_immediate_child(kml_elem) do child
         if XML.nodetype(child) === XML.Element
             child_tag = tag(child)
             if _is_feature_tag(child_tag)
@@ -95,14 +89,15 @@ function _lazy_top_level_features(file::LazyKMLFile)
 
     # If no direct features, look inside first container
     if isempty(features)
-        for child in children(kml_elem)
-            if XML.nodetype(child) === XML.Element && _is_container_tag(tag(child))
-                for subchild in children(child)
-                    if XML.nodetype(subchild) === XML.Element && _is_feature_tag(tag(subchild))
-                        push!(features, subchild)
-                    end
+        first_container = find_immediate_child(kml_elem) do child
+            XML.nodetype(child) === XML.Element && _is_container_tag(tag(child))
+        end
+        
+        if first_container !== nothing
+            for_each_immediate_child(first_container) do subchild
+                if XML.nodetype(subchild) === XML.Element && _is_feature_tag(tag(subchild))
+                    push!(features, subchild)
                 end
-                break  # Only look in first container
             end
         end
     end
@@ -130,7 +125,7 @@ end
 
 function _count_placemarks_recursive_lazy(node::XML.AbstractXMLNode)::Int
     count = 0
-    for child in children(node)
+    for_each_immediate_child(node) do child
         child_tag = tag(child)
         if child_tag == "Placemark"
             count += 1
@@ -166,7 +161,7 @@ function get_layer_info(file::Union{KMLFile,LazyKMLFile})
 
                 # Look for sub-containers and placemarks
                 has_placemarks = false
-                for child in children(main_container)
+                for_each_immediate_child(main_container) do child
                     child_tag = tag(child)
                     if _is_container_tag(child_tag)
                         idx_counter += 1

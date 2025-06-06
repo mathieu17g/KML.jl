@@ -204,36 +204,38 @@ function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, b
         return
     end
     
-    boundary_children = XML.children(boundary_node)
-    element_children = [c for c in boundary_children if XML.nodetype(c) === XML.Element]
-    
     if boundary_type === :outerBoundaryIs
-        if length(element_children) == 1
-            lr_node = element_children[1]
-            if tagsym(XML.tag(lr_node)) === :LinearRing
-                lr_obj = object_fn(lr_node)
-                if lr_obj isa Types.LinearRing
-                    setfield!(polygon, :outerBoundaryIs, lr_obj)
-                else
-                    @warn "<outerBoundaryIs> LinearRing didn't parse correctly"
-                end
+        lr_node = find_immediate_child(boundary_node) do c
+            XML.nodetype(c) === XML.Element && tagsym(XML.tag(c)) === :LinearRing
+        end
+        
+        if lr_node !== nothing
+            lr_obj = object_fn(lr_node)
+            if lr_obj isa Types.LinearRing
+                setfield!(polygon, :outerBoundaryIs, lr_obj)
             else
-                @warn "<outerBoundaryIs> expected <LinearRing>, got <$(XML.tag(lr_node))>"
+                @warn "<outerBoundaryIs> LinearRing didn't parse correctly"
             end
         else
-            @warn "<outerBoundaryIs> expected 1 element, found $(length(element_children))"
+            # Count children for better error message
+            element_count = 0
+            for_each_immediate_child(boundary_node) do c
+                element_count += (XML.nodetype(c) === XML.Element ? 1 : 0)
+            end
+            @warn "<outerBoundaryIs> expected <LinearRing>, found $element_count element(s)"
         end
         
     elseif boundary_type === :innerBoundaryIs
-        if isempty(element_children)
-            @warn "<innerBoundaryIs> contained no elements"
-        else
-            if getfield(polygon, :innerBoundaryIs) === nothing
-                setfield!(polygon, :innerBoundaryIs, Types.LinearRing[])
-            end
-            
-            rings_processed = 0
-            for lr_node in element_children
+        if getfield(polygon, :innerBoundaryIs) === nothing
+            setfield!(polygon, :innerBoundaryIs, Types.LinearRing[])
+        end
+        
+        rings_processed = 0
+        element_count = 0
+        
+        for_each_immediate_child(boundary_node) do lr_node
+            if XML.nodetype(lr_node) === XML.Element
+                element_count += 1
                 if tagsym(XML.tag(lr_node)) === :LinearRing
                     lr_obj = object_fn(lr_node)
                     if lr_obj isa Types.LinearRing
@@ -246,10 +248,12 @@ function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, b
                     @warn "<innerBoundaryIs> contained non-LinearRing element: <$(XML.tag(lr_node))>"
                 end
             end
-            
-            if length(element_children) > 1 && rings_processed > 0
-                @info "Processed $rings_processed LinearRing(s) from <innerBoundaryIs>" maxlog=1
-            end
+        end
+        
+        if element_count == 0
+            @warn "<innerBoundaryIs> contained no elements"
+        elseif element_count > 1 && rings_processed > 0
+            @info "Processed $rings_processed LinearRing(s) from <innerBoundaryIs>" maxlog=1
         end
     end
 end
