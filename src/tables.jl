@@ -41,7 +41,7 @@ end
 function _collect_placemarks_optimized!(placemarks::Vector, node::XML.AbstractXMLNode)
     # Use @for_each_immediate_child instead of children()
     @for_each_immediate_child node child begin
-        XML.nodetype(child) === XML.Element || return
+        XML.nodetype(child) === XML.Element || continue
         
         child_tag = tag(child)
         
@@ -171,7 +171,7 @@ function extract_placemark_fields_lazy(placemark_node::XML.AbstractXMLNode)
     has_geometry = false
     
     @for_each_immediate_child placemark_node child begin
-        XML.nodetype(child) === XML.Element || return
+        XML.nodetype(child) === XML.Element || continue
         
         child_tag = tag(child)
         
@@ -193,7 +193,7 @@ function extract_placemark_fields_lazy(placemark_node::XML.AbstractXMLNode)
         # Note: We continue even if name/description are empty strings because
         # that might be the actual content
         if has_name && has_description && has_geometry
-            return  # This will continue iteration but we've got all we need
+            continue  # This will continue iteration but we've got all we need
         end
     end
     
