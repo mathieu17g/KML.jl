@@ -38,22 +38,16 @@ end
 
 # Optimized collection with minimal allocations
 function _collect_placemarks_optimized!(placemarks::Vector, node::XML.AbstractXMLNode)
-    node_children = children(node)
-
-    @inbounds for i = 1:length(node_children)
-        child = node_children[i]
-
-        # Skip non-element nodes early
+    # MUST use children() to get only immediate children, not entire subtree
+    for child in children(node)
         XML.nodetype(child) === XML.Element || continue
-
+        
         child_tag = tag(child)
-
+        
         if child_tag == "Placemark"
-            # Extract only what we need - no full object materialization!
             placemark_data = extract_placemark_fields_lazy(child)
             push!(placemarks, placemark_data)
-
-        elseif child_tag in ("Document", "Folder")  # Inline container check
+        elseif child_tag in ("Document", "Folder")
             _collect_placemarks_optimized!(placemarks, child)
         end
     end
@@ -76,7 +70,7 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
     if geom_tag == "Point"
         # Extract coordinates directly
         for child in children(geom_node)
-            if tag(child) == "coordinates"
+            if XML.nodetype(child) === XML.Element && tag(child) == "coordinates"
                 coord_text = extract_text_content_fast(child)
                 coords = parse_coordinates_automa(coord_text)
                 if isempty(coords)
@@ -91,7 +85,7 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
 
     elseif geom_tag == "LineString"
         for child in children(geom_node)
-            if tag(child) == "coordinates"
+            if XML.nodetype(child) === XML.Element && tag(child) == "coordinates"
                 coord_text = extract_text_content_fast(child)
                 coords = parse_coordinates_automa(coord_text)
                 return KML.LineString(; coordinates = isempty(coords) ? nothing : coords)
@@ -104,20 +98,22 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
         inner_rings = KML.LinearRing[]
 
         for child in children(geom_node)
-            child_tag = tag(child)
-            if child_tag == "outerBoundaryIs"
-                for boundary_child in children(child)
-                    if tag(boundary_child) == "LinearRing"
-                        outer_ring = parse_linear_ring_lazy(boundary_child)
-                        break
+            if XML.nodetype(child) === XML.Element
+                child_tag = tag(child)
+                if child_tag == "outerBoundaryIs"
+                    for boundary_child in children(child)
+                        if XML.nodetype(boundary_child) === XML.Element && tag(boundary_child) == "LinearRing"
+                            outer_ring = parse_linear_ring_lazy(boundary_child)
+                            break
+                        end
                     end
-                end
-            elseif child_tag == "innerBoundaryIs"
-                for boundary_child in children(child)
-                    if tag(boundary_child) == "LinearRing"
-                        ring = parse_linear_ring_lazy(boundary_child)
-                        if ring !== nothing && ring.coordinates !== nothing && !isempty(ring.coordinates)
-                            push!(inner_rings, ring)
+                elseif child_tag == "innerBoundaryIs"
+                    for boundary_child in children(child)
+                        if XML.nodetype(boundary_child) === XML.Element && tag(boundary_child) == "LinearRing"
+                            ring = parse_linear_ring_lazy(boundary_child)
+                            if ring !== nothing && ring.coordinates !== nothing && !isempty(ring.coordinates)
+                                push!(inner_rings, ring)
+                            end
                         end
                     end
                 end
@@ -134,7 +130,7 @@ function parse_geometry_lazy(geom_node::XML.AbstractXMLNode)
     elseif geom_tag == "MultiGeometry"
         geometries = Geometry[]
         for child in children(geom_node)
-            if tag(child) in ("Point", "LineString", "Polygon", "MultiGeometry")
+            if XML.nodetype(child) === XML.Element && tag(child) in ("Point", "LineString", "Polygon", "MultiGeometry")
                 geom = parse_geometry_lazy(child)
                 if !ismissing(geom)
                     push!(geometries, geom)
@@ -149,7 +145,7 @@ end
 
 function parse_linear_ring_lazy(ring_node::XML.AbstractXMLNode)
     for child in children(ring_node)
-        if tag(child) == "coordinates"
+        if XML.nodetype(child) === XML.Element && tag(child) == "coordinates"
             coord_text = extract_text_content_fast(child)
             coords = parse_coordinates_automa(coord_text)
             return KML.LinearRing(; coordinates = isempty(coords) ? nothing : coords)
@@ -163,31 +159,31 @@ function extract_placemark_fields_lazy(placemark_node::XML.AbstractXMLNode)
     name = ""
     description = ""
     geometry = missing
-
+    
     for child in children(placemark_node)
+        XML.nodetype(child) === XML.Element || continue
+        
         child_tag = tag(child)
-
+        
         if child_tag == "name"
             name = extract_text_content_fast(child)
-            # Handle HTML entities if needed
             if occursin('&', name)
                 name = decode_named_entities(name)
             end
         elseif child_tag == "description"
             description = extract_text_content_fast(child)
         elseif child_tag in ("Point", "LineString", "Polygon", "MultiGeometry")
-            # Only parse geometry if we haven't found one yet
             if ismissing(geometry)
                 geometry = parse_geometry_lazy(child)
             end
         end
-
+        
         # Early exit if we have all fields
         if !isempty(name) && !isempty(description) && !ismissing(geometry)
             break
         end
     end
-
+    
     return (name = name, description = description, geometry = geometry)
 end
 

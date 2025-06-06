@@ -5,33 +5,101 @@ export object, extract_text_content_fast
 using TimeZones
 using Dates
 import XML
-import XML: nodetype
 import ..Types: KMLElement, TAG_TO_TYPE, typemap, KMLFile, NoAttributes, tagsym
 import ..Types  # Import all types
 import ..Enums
 import ..FieldConversion: assign_field!, assign_complex_object!, handle_polygon_boundary!
 import ..Coordinates: coordinate_string
 
-# ─── Text extraction ─────────────────────────────────────────────────────────
+# ─── LazyNode iteration helpers ──────────────────────────────────────────────
+
 """
-Fast extraction of text content from an XML node.
+    for_each_immediate_child(f::Function, node::XML.AbstractXMLNode)
+
+Iterate over only the immediate children of a node without allocating a vector.
+For LazyNode, this avoids XML.jl's default behavior of iterating the entire subtree.
 """
-function extract_text_content_fast(node::XML.AbstractXMLNode)
-    text_parts = String[]
-    for child in XML.children(node)
-        if XML.nodetype(child) === XML.Text
-            text_value = XML.value(child)
-            if text_value !== nothing
-                push!(text_parts, text_value)
-            end
-        elseif XML.nodetype(child) === XML.CData
-            cdata_value = XML.value(child)
-            if cdata_value !== nothing
-                push!(text_parts, cdata_value)
+function for_each_immediate_child(f::Function, node::XML.LazyNode)
+    initial_depth = XML.depth(node)
+    target_depth = initial_depth + 1
+    current = XML.next(node)
+    while !isnothing(current) && XML.depth(current) >= target_depth
+        if XML.depth(current) == target_depth
+            f(current)  # Process this immediate child
+            current = XML.next(current)
+        else
+            # Skip the entire subtree
+            while !isnothing(current) && XML.depth(current) > target_depth
+                current = XML.next(current)
             end
         end
     end
-    return join(text_parts)
+end
+
+function for_each_immediate_child(f::Function, node::XML.Node)
+    for child in XML.children(node)
+        f(child)
+    end
+end
+
+"""
+    find_immediate_child(predicate::Function, node::XML.AbstractXMLNode)
+
+Find the first immediate child of a node that satisfies the predicate.
+Returns the child node if found, or `nothing` if not found.
+"""
+function find_immediate_child(predicate::Function, node::XML.LazyNode)
+    initial_depth = XML.depth(node)
+    target_depth = initial_depth + 1
+    current = XML.next(node)
+    while !isnothing(current) && XML.depth(current) >= target_depth
+        if XML.depth(current) == target_depth
+            if predicate(current)
+                return current  # Found it
+            end
+            current = XML.next(current)
+        else
+            # Skip the entire subtree
+            while !isnothing(current) && XML.depth(current) > target_depth
+                current = XML.next(current)
+            end
+        end
+    end
+    return nothing
+end
+
+function find_immediate_child(predicate::Function, node::XML.Node)
+    for child in XML.children(node)
+        if predicate(child)
+            return child
+        end
+    end
+    return nothing
+end
+
+# ─── Text extraction ─────────────────────────────────────────────────────────
+
+"""
+    extract_text_content_fast(node::XML.AbstractXMLNode) -> String
+
+Extracts and concatenates the text content from the immediate children of a given XML node.
+
+This function iterates only through the direct children of `node`. If a child is an
+XML Text (`XML.Text`) or CData (`XML.CData`) node, its string value is collected.
+All collected text values are then joined together. If no text content is found
+among the immediate children, or if all text values are `nothing`, an empty string is returned.
+"""
+function extract_text_content_fast(node::XML.AbstractXMLNode)
+    texts = String[]
+    for_each_immediate_child(node) do child
+        if XML.nodetype(child) === XML.Text || XML.nodetype(child) === XML.CData
+            text_value = XML.value(child)
+            if text_value !== nothing
+                push!(texts, text_value)
+            end
+        end
+    end
+    return isempty(texts) ? "" : join(texts)
 end
 
 # ─── Parse KMLFile from XML document ─────────────────────────────────────────
@@ -88,7 +156,7 @@ function object(node::XML.AbstractXMLNode)
             # For Snippet, still process any element children
             if T === Types.Snippet
                 for child_element_node in node_children
-                    if nodetype(child_element_node) === XML.Element
+                    if XML.nodetype(child_element_node) === XML.Element
                         add_element!(o, child_element_node)
                     end
                 end
@@ -96,7 +164,7 @@ function object(node::XML.AbstractXMLNode)
         else
             # Generic parsing of child ELEMENTS for all other KMLElement types
             for child_element_node in node_children
-                if nodetype(child_element_node) === XML.Element
+                if XML.nodetype(child_element_node) === XML.Element
                     add_element!(o, child_element_node)
                 end
             end

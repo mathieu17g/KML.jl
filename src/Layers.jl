@@ -62,21 +62,19 @@ function _is_container_tag(tag_name::String)
 end
 
 function _get_name_from_node(node::XML.AbstractXMLNode)
-    # Check attributes first (some elements might have name as attribute)
-    attrs = attributes(node)
-    if attrs !== nothing && haskey(attrs, "name")
-        return attrs["name"]
-    end
-
-    # Look for <name> child element
-    for child in children(node)
-        if tag(child) == "name"
-            # Get text content
-            for textnode in children(child)
+    # Use direct iteration to find name without allocating children vector
+    for child in node  # Direct iteration - but only look at immediate children
+        if XML.nodetype(child) === XML.Element && tag(child) == "name"
+            # Found name element, extract text
+            for textnode in child
                 if XML.nodetype(textnode) === XML.Text
                     return XML.value(textnode)
                 end
             end
+            return nothing  # name element found but no text
+        elseif XML.nodetype(child) === XML.Element
+            # Stop at first non-name element to avoid deep traversal
+            break
         end
     end
     return nothing
@@ -87,18 +85,20 @@ function _lazy_top_level_features(file::LazyKMLFile)
     features = []
 
     for child in children(kml_elem)
-        child_tag = tag(child)
-        if _is_feature_tag(child_tag)
-            push!(features, child)
+        if XML.nodetype(child) === XML.Element
+            child_tag = tag(child)
+            if _is_feature_tag(child_tag)
+                push!(features, child)
+            end
         end
     end
 
     # If no direct features, look inside first container
     if isempty(features)
         for child in children(kml_elem)
-            if _is_container_tag(tag(child))
+            if XML.nodetype(child) === XML.Element && _is_container_tag(tag(child))
                 for subchild in children(child)
-                    if _is_feature_tag(tag(subchild))
+                    if XML.nodetype(subchild) === XML.Element && _is_feature_tag(tag(subchild))
                         push!(features, subchild)
                     end
                 end
@@ -146,14 +146,74 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 
 function get_layer_info(file::Union{KMLFile,LazyKMLFile})
-    if file isa LazyKMLFile && file._layer_info_cache !== nothing
-        return file._layer_info_cache
-    end
+    if file isa LazyKMLFile
+        lock(file._lock) do
+            # Check cache first
+            if file._layer_info_cache !== nothing
+                return file._layer_info_cache
+            end
+            
+            # Build layer info
+            layer_infos = Tuple{Int,String,Any}[]
+            idx_counter = 0
+            
+            #! LazyKMLFile implementation
+            top_feats = _lazy_top_level_features(file)
 
-    layer_infos = Tuple{Int,String,Any}[]
-    idx_counter = 0
+            if length(top_feats) == 1 && _is_container_tag(tag(top_feats[1]))
+                main_container = top_feats[1]
+                main_container_name = _get_name_from_node(main_container)
 
-    if file isa KMLFile
+                # Look for sub-containers and placemarks
+                has_placemarks = false
+                for child in children(main_container)
+                    child_tag = tag(child)
+                    if _is_container_tag(child_tag)
+                        idx_counter += 1
+                        layer_name = _get_name_from_node(child)
+                        layer_name = layer_name !== nothing ? layer_name : "<Unnamed Container>"
+                        push!(layer_infos, (idx_counter, layer_name, child))
+                    elseif child_tag == "Placemark"
+                        has_placemarks = true
+                    end
+                end
+
+                if has_placemarks
+                    idx_counter += 1
+                    container_desc = main_container_name !== nothing ? main_container_name : "Top Container"
+                    push!(layer_infos, (idx_counter, "<Placemarks in $container_desc>", main_container))
+                end
+            else
+                has_top_placemarks = false
+                for feat in top_feats
+                    feat_tag = tag(feat)
+                    if _is_container_tag(feat_tag)
+                        idx_counter += 1
+                        layer_name = _get_name_from_node(feat)
+                        layer_name = layer_name !== nothing ? layer_name : "<Unnamed Container>"
+                        push!(layer_infos, (idx_counter, layer_name, feat))
+                    elseif feat_tag == "Placemark"
+                        has_top_placemarks = true
+                    end
+                end
+
+                if has_top_placemarks
+                    idx_counter += 1
+                    # Store the kml element itself as the source for top-level placemarks
+                    kml_elem = _find_kml_element(file.root_node)
+                    push!(layer_infos, (idx_counter, "<Ungrouped Top-Level Placemarks>", kml_elem))
+                end
+            end
+
+            # Cache the result
+            file._layer_info_cache = layer_infos
+            return layer_infos
+        end
+    else
+        # KMLFile branch - no locking needed
+        layer_infos = Tuple{Int,String,Any}[]
+        idx_counter = 0
+        
         #! Eager KMLFile implementation
         top_feats = _top_level_features(file)
 
@@ -206,60 +266,9 @@ function get_layer_info(file::Union{KMLFile,LazyKMLFile})
                 push!(layer_infos, (idx_counter, "<Ungrouped Top-Level Placemarks>", direct_top_pms))
             end
         end
-    else
-        #! LazyKMLFile implementation
-        top_feats = _lazy_top_level_features(file)
-
-        if length(top_feats) == 1 && _is_container_tag(tag(top_feats[1]))
-            main_container = top_feats[1]
-            main_container_name = _get_name_from_node(main_container)
-
-            # Look for sub-containers and placemarks
-            has_placemarks = false
-            for child in children(main_container)
-                child_tag = tag(child)
-                if _is_container_tag(child_tag)
-                    idx_counter += 1
-                    layer_name = _get_name_from_node(child)
-                    layer_name = layer_name !== nothing ? layer_name : "<Unnamed Container>"
-                    push!(layer_infos, (idx_counter, layer_name, child))
-                elseif child_tag == "Placemark"
-                    has_placemarks = true
-                end
-            end
-
-            if has_placemarks
-                idx_counter += 1
-                container_desc = main_container_name !== nothing ? main_container_name : "Top Container"
-                push!(layer_infos, (idx_counter, "<Placemarks in $container_desc>", main_container))
-            end
-        else
-            has_top_placemarks = false
-            for feat in top_feats
-                feat_tag = tag(feat)
-                if _is_container_tag(feat_tag)
-                    idx_counter += 1
-                    layer_name = _get_name_from_node(feat)
-                    layer_name = layer_name !== nothing ? layer_name : "<Unnamed Container>"
-                    push!(layer_infos, (idx_counter, layer_name, feat))
-                elseif feat_tag == "Placemark"
-                    has_top_placemarks = true
-                end
-            end
-
-            if has_top_placemarks
-                idx_counter += 1
-                # Store the kml element itself as the source for top-level placemarks
-                kml_elem = _find_kml_element(file.root_node)
-                push!(layer_infos, (idx_counter, "<Ungrouped Top-Level Placemarks>", kml_elem))
-            end
-        end
-
-        # Cache the result
-        file._layer_info_cache = layer_infos
+        
+        return layer_infos
     end
-
-    return layer_infos
 end
 
 # ──────────────────────────────────────────────────────────────────────────────

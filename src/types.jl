@@ -154,8 +154,9 @@ mutable struct LazyKMLFile
     root_node::XML.AbstractXMLNode
     _layer_cache::Dict{String,Any}
     _layer_info_cache::Union{Nothing,Vector{Tuple{Int,String,Any}}}
+    _lock::ReentrantLock
     
-    LazyKMLFile(root_node::XML.AbstractXMLNode) = new(root_node, Dict{String,Any}(), nothing)
+    LazyKMLFile(root_node::XML.AbstractXMLNode) = new(root_node, Dict{String,Any}(), nothing, ReentrantLock())
 end
 
 Base.:(==)(a::LazyKMLFile, b::LazyKMLFile) = a.root_node == b.root_node
@@ -724,10 +725,16 @@ function _create_tagsym_cache()
     
     # Helper to add both underscore and colon versions
     function add_tag!(cache, str::String)
-        sym = Symbol(str)
+        # Always convert colons to underscores for the symbol
+        sym = Symbol(replace(str, ":" => "_"))
         cache[str] = sym
-        # Also add colon version if it contains underscore
-        if occursin('_', str)
+        
+        # If the string contains a colon, also add the underscore version
+        if occursin(':', str)
+            underscore_version = replace(str, ":" => "_")
+            cache[underscore_version] = sym
+        # If the string contains an underscore, also add the colon version
+        elseif occursin('_', str)
             colon_version = replace(str, "_" => ":")
             cache[colon_version] = sym
         end
