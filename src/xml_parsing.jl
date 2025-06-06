@@ -1,6 +1,6 @@
 module XMLParsing
 
-export object, extract_text_content_fast, for_each_immediate_child, find_immediate_child
+export object, extract_text_content_fast
 
 using TimeZones
 using Dates
@@ -9,77 +9,8 @@ import ..Types: KMLElement, TAG_TO_TYPE, typemap, KMLFile, NoAttributes, tagsym
 import ..Types  # Import all types
 import ..Enums
 import ..FieldConversion: assign_field!, assign_complex_object!, handle_polygon_boundary!
+import ..Macros: @for_each_immediate_child, @find_immediate_child, @count_immediate_children
 import ..Coordinates: coordinate_string
-
-# ─── LazyNode iteration helpers ──────────────────────────────────────────────
-
-"""
-    for_each_immediate_child(f::Function, node::XML.AbstractXMLNode)
-
-Iterate over only the immediate children of a node without allocating a vector.
-For LazyNode, this avoids XML.jl's default behavior of iterating the entire subtree.
-"""
-@inline function for_each_immediate_child(f::F, node::XML.LazyNode) where F
-    initial_depth = XML.depth(node)
-    target_depth = initial_depth + 1
-    current = XML.next(node)
-    while !isnothing(current) && XML.depth(current) >= target_depth
-        if XML.depth(current) == target_depth
-            f(current)  # Process this immediate child
-            current = XML.next(current)
-        else
-            # Skip the entire subtree
-            while !isnothing(current) && XML.depth(current) > target_depth
-                current = XML.next(current)
-            end
-        end
-    end
-    return nothing
-end
-
-@inline function for_each_immediate_child(f::F, node::XML.Node) where F
-    children_vec = XML.children(node)
-    for child in children_vec
-        f(child)
-    end
-    return nothing
-end
-
-"""
-    find_immediate_child(predicate::Function, node::XML.AbstractXMLNode)
-
-Find the first immediate child of a node that satisfies the predicate.
-Returns the child node if found, or `nothing` if not found.
-"""
-@inline function find_immediate_child(predicate::P, node::XML.LazyNode) where P
-    initial_depth = XML.depth(node)
-    target_depth = initial_depth + 1
-    current = XML.next(node)
-    while !isnothing(current) && XML.depth(current) >= target_depth
-        if XML.depth(current) == target_depth
-            if predicate(current)::Bool
-                return current  # Found it
-            end
-            current = XML.next(current)
-        else
-            # Skip the entire subtree
-            while !isnothing(current) && XML.depth(current) > target_depth
-                current = XML.next(current)
-            end
-        end
-    end
-    return nothing
-end
-
-@inline function find_immediate_child(predicate::P, node::XML.Node) where P
-    children_vec = XML.children(node)
-    for child in children_vec
-        if predicate(child)::Bool
-            return child
-        end
-    end
-    return nothing
-end
 
 # ─── Text extraction ─────────────────────────────────────────────────────────
 
@@ -95,7 +26,7 @@ among the immediate children, or if all text values are `nothing`, an empty stri
 """
 function extract_text_content_fast(node::XML.AbstractXMLNode)
     texts = String[]
-    for_each_immediate_child(node) do child
+    @for_each_immediate_child node child begin
         if XML.nodetype(child) === XML.Text || XML.nodetype(child) === XML.CData
             text_value = XML.value(child)
             if text_value !== nothing
@@ -108,14 +39,12 @@ end
 
 # ─── Parse KMLFile from XML document ─────────────────────────────────────────
 function parse_kmlfile(doc::XML.AbstractXMLNode)
-    kml_element = find_immediate_child(doc) do x
-        XML.nodetype(x) === XML.Element && XML.tag(x) == "kml"
-    end
+    kml_element = @find_immediate_child doc x (XML.nodetype(x) === XML.Element && XML.tag(x) == "kml")
     isnothing(kml_element) && error("No <kml> tag found in file.")
     
     # Only process element nodes
     kml_children = Vector{Union{XML.AbstractXMLNode,KMLElement}}()
-    for_each_immediate_child(kml_element) do child_node
+    @for_each_immediate_child kml_element child_node begin
         if XML.nodetype(child_node) === XML.Element
             push!(kml_children, object(child_node))
         end
@@ -157,7 +86,7 @@ function object(node::XML.AbstractXMLNode)
             end
             # For Snippet, still process any element children
             if T === Types.Snippet
-                for_each_immediate_child(node) do child_element_node
+                @for_each_immediate_child node child_element_node begin
                     if nodetype(child_element_node) === XML.Element
                         add_element!(o, child_element_node)
                     end
@@ -165,7 +94,7 @@ function object(node::XML.AbstractXMLNode)
             end
         else
             # Generic parsing of child ELEMENTS for all other KMLElement types
-            for_each_immediate_child(node) do child_element_node
+            @for_each_immediate_child node child_element_node begin
                 if nodetype(child_element_node) === XML.Element
                     add_element!(o, child_element_node)
                 end
@@ -236,7 +165,7 @@ function _object_slow(node::XML.AbstractXMLNode)
         
         o = T()
         add_attributes!(o, node)
-        for_each_immediate_child(node) do child_xml_node
+        @for_each_immediate_child node child_xml_node begin
             add_element!(o, child_xml_node)
         end
         return o

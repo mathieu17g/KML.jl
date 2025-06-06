@@ -6,7 +6,8 @@ using REPL.TerminalMenus
 using Base: read  # Import read from Base
 import ..Types: KMLFile, LazyKMLFile, Feature, Document, Folder, Placemark
 import XML: XML, children, tag, attributes
-import ..XMLParsing: find_immediate_child, for_each_immediate_child, extract_text_content_fast
+import ..XMLParsing: extract_text_content_fast
+import ..Macros: @find_immediate_child, @for_each_immediate_child, @count_immediate_children
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Eager (KMLFile) helpers
@@ -45,9 +46,7 @@ end
 # ──────────────────────────────────────────────────────────────────────────────
 
 function _find_kml_element(doc::XML.AbstractXMLNode)
-    kml_elem = find_immediate_child(doc) do child
-        tag(child) == "kml"
-    end
+    kml_elem = @find_immediate_child doc child (tag(child) == "kml")
     isnothing(kml_elem) && error("No <kml> tag found in LazyKMLFile")
     return kml_elem
 end
@@ -62,7 +61,7 @@ function _is_container_tag(tag_name::String)
 end
 
 function _get_name_from_node(node::XML.AbstractXMLNode)
-    name_node = find_immediate_child(node) do child
+    name_node = @find_immediate_child node child begin
         XML.nodetype(child) === XML.Element && tag(child) == "name"
     end
     
@@ -78,7 +77,7 @@ function _lazy_top_level_features(file::LazyKMLFile)
     kml_elem = _find_kml_element(file.root_node)
     features = []
 
-    for_each_immediate_child(kml_elem) do child
+    @for_each_immediate_child kml_elem child begin
         if XML.nodetype(child) === XML.Element
             child_tag = tag(child)
             if _is_feature_tag(child_tag)
@@ -89,12 +88,12 @@ function _lazy_top_level_features(file::LazyKMLFile)
 
     # If no direct features, look inside first container
     if isempty(features)
-        first_container = find_immediate_child(kml_elem) do child
+        first_container = @find_immediate_child kml_elem child begin
             XML.nodetype(child) === XML.Element && _is_container_tag(tag(child))
         end
         
         if first_container !== nothing
-            for_each_immediate_child(first_container) do subchild
+            @for_each_immediate_child first_container subchild begin
                 if XML.nodetype(subchild) === XML.Element && _is_feature_tag(tag(subchild))
                     push!(features, subchild)
                 end
@@ -125,12 +124,15 @@ end
 
 function _count_placemarks_recursive_lazy(node::XML.AbstractXMLNode)::Int
     count = 0
-    for_each_immediate_child(node) do child
+    @for_each_immediate_child node child begin
         child_tag = tag(child)
         if child_tag == "Placemark"
             count += 1
         elseif _is_container_tag(child_tag)
-            count += _count_placemarks_recursive_lazy(child)
+            # Only recurse if there are element children
+            if (@count_immediate_children child c (XML.nodetype(c) === XML.Element)) > 0
+                count += _count_placemarks_recursive_lazy(child)
+            end
         end
     end
     return count
@@ -161,7 +163,7 @@ function get_layer_info(file::Union{KMLFile,LazyKMLFile})
 
                 # Look for sub-containers and placemarks
                 has_placemarks = false
-                for_each_immediate_child(main_container) do child
+                @for_each_immediate_child main_container child begin
                     child_tag = tag(child)
                     if _is_container_tag(child_tag)
                         idx_counter += 1

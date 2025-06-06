@@ -12,6 +12,7 @@ import ..Enums
 import ..Coordinates: parse_coordinates_automa
 import ..TimeParsing: parse_iso8601
 import XML
+import ..Macros: @find_immediate_child, @for_each_immediate_child, @count_immediate_children
 
 # ─── Field Conversion Error ──────────────────────────────────────────────────
 struct FieldConversionError <: Exception
@@ -205,7 +206,7 @@ function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, b
     end
     
     if boundary_type === :outerBoundaryIs
-        lr_node = find_immediate_child(boundary_node) do c
+        lr_node = @find_immediate_child boundary_node c begin
             XML.nodetype(c) === XML.Element && tagsym(XML.tag(c)) === :LinearRing
         end
         
@@ -218,10 +219,7 @@ function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, b
             end
         else
             # Count children for better error message
-            element_count = 0
-            for_each_immediate_child(boundary_node) do c
-                element_count += (XML.nodetype(c) === XML.Element ? 1 : 0)
-            end
+            element_count = @count_immediate_children boundary_node c (XML.nodetype(c) === XML.Element)
             @warn "<outerBoundaryIs> expected <LinearRing>, found $element_count element(s)"
         end
         
@@ -233,7 +231,7 @@ function handle_polygon_boundary!(polygon, boundary_node::XML.AbstractXMLNode, b
         rings_processed = 0
         element_count = 0
         
-        for_each_immediate_child(boundary_node) do lr_node
+        @for_each_immediate_child boundary_node lr_node begin
             if XML.nodetype(lr_node) === XML.Element
                 element_count += 1
                 if tagsym(XML.tag(lr_node)) === :LinearRing

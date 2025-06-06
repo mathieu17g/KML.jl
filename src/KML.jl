@@ -7,6 +7,9 @@ using Automa, Parsers
 using TimeZones, Dates
 using InteractiveUtils: subtypes
 
+# XML LazyNode and Node iterating macros helpers
+include("macros.jl")
+
 # Include all modules in dependency order
 include("enums.jl")
 include("types.jl")
