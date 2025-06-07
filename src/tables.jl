@@ -39,7 +39,6 @@ end
 
 # Optimized collection with minimal allocations
 function _collect_placemarks_optimized!(placemarks::Vector, node::XML.AbstractXMLNode)
-    # Use @for_each_immediate_child instead of children()
     @for_each_immediate_child node child begin
         XML.nodetype(child) === XML.Element || continue
         
@@ -187,13 +186,6 @@ function extract_placemark_fields_lazy(placemark_node::XML.AbstractXMLNode)
         elseif child_tag in ("Point", "LineString", "Polygon", "MultiGeometry") && !has_geometry
             geometry = parse_geometry_lazy(child)
             has_geometry = true
-        end
-        
-        # Early exit if we have all fields
-        # Note: We continue even if name/description are empty strings because
-        # that might be the actual content
-        if has_name && has_description && has_geometry
-            continue  # This will continue iteration but we've got all we need
         end
     end
     

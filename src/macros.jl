@@ -19,18 +19,28 @@ macro for_each_immediate_child(node_expr, child_var, body)
                     _target_depth = _initial_depth + 1,
                     _current = XML.next(_node)
                     
-                    while !isnothing(_current) && XML.depth(_current) >= _target_depth
-                        if XML.depth(_current) == _target_depth
+                    while !isnothing(_current)
+                        _cur_depth = XML.depth(_current)
+                        
+                        # Stop if we've gone back up above our initial node
+                        if _cur_depth < _initial_depth
+                            break
+                        end
+                        
+                        # If we're back at initial depth, we've finished this node's children
+                        if _cur_depth == _initial_depth
+                            break
+                        end
+                        
+                        # Process immediate children
+                        if _cur_depth == _target_depth
                             let $(esc(child_var)) = _current
                                 $(esc(body))
                             end
-                            _current = XML.next(_current)
-                        else
-                            # Skip the entire subtree
-                            while !isnothing(_current) && XML.depth(_current) > _target_depth
-                                _current = XML.next(_current)
-                            end
                         end
+                        
+                        # Always move to next node
+                        _current = XML.next(_current)
                     end
                 end
             else
@@ -59,20 +69,25 @@ macro find_immediate_child(node_expr, child_var, condition)
                     _current = XML.next(_node),
                     _result = nothing
                     
-                    while !isnothing(_current) && XML.depth(_current) >= _target_depth && isnothing(_result)
-                        if XML.depth(_current) == _target_depth
+                    while !isnothing(_current) && isnothing(_result)
+                        _cur_depth = XML.depth(_current)
+                        
+                        # Stop if we've gone back up to or above our initial node
+                        if _cur_depth <= _initial_depth
+                            break
+                        end
+                        
+                        # Check immediate children only
+                        if _cur_depth == _target_depth
                             let $(esc(child_var)) = _current
                                 if $(esc(condition))
                                     _result = _current
                                 end
                             end
-                            _current = XML.next(_current)
-                        else
-                            # Skip the entire subtree
-                            while !isnothing(_current) && XML.depth(_current) > _target_depth
-                                _current = XML.next(_current)
-                            end
                         end
+                        
+                        # Always move to next node
+                        _current = XML.next(_current)
                     end
                     _result
                 end
@@ -107,20 +122,25 @@ macro count_immediate_children(node_expr, child_var, condition)
                     _current = XML.next(_node),
                     _count = 0
                     
-                    while !isnothing(_current) && XML.depth(_current) >= _target_depth
-                        if XML.depth(_current) == _target_depth
+                    while !isnothing(_current)
+                        _cur_depth = XML.depth(_current)
+                        
+                        # Stop if we've gone back up to or above our initial node
+                        if _cur_depth <= _initial_depth
+                            break
+                        end
+                        
+                        # Count immediate children only
+                        if _cur_depth == _target_depth
                             let $(esc(child_var)) = _current
                                 if $(esc(condition))
                                     _count += 1
                                 end
                             end
-                            _current = XML.next(_current)
-                        else
-                            # Skip the entire subtree
-                            while !isnothing(_current) && XML.depth(_current) > _target_depth
-                                _current = XML.next(_current)
-                            end
                         end
+                        
+                        # Always move to next node
+                        _current = XML.next(_current)
                     end
                     _count
                 end
