@@ -19,25 +19,34 @@ macro for_each_immediate_child(node_expr, child_var, body)
                     _target_depth = _initial_depth + 1,
                     _current = XML.next(_node)
                     
-                    # Cache raw pointer for faster access
-                    _raw = _current === nothing ? nothing : _current.raw
-                    
-                    while _raw !== nothing
-                        # Access depth directly from raw (it's already an XML.Raw)
+                    while !isnothing(_current)
+                        _raw = _current.raw
                         _cur_depth = XML.depth(_raw)
                         
+                        # Single stop condition
                         if _cur_depth <= _initial_depth
                             break
-                        elseif _cur_depth == _target_depth
-                            # Only create LazyNode when needed
-                            let $(esc(child_var)) = XML.LazyNode(_raw)
-                                $(esc(body))
-                            end
                         end
                         
-                        # Advance using raw pointer
-                        # XML.next returns XML.Raw or nothing directly
-                        _raw = XML.next(_raw)
+                        # Process only immediate children
+                        if _cur_depth == _target_depth
+                            let $(esc(child_var)) = _current
+                                $(esc(body))
+                            end
+                            # After processing, we know next() is safe
+                            _current = XML.next(_current)
+                        elseif _cur_depth > _target_depth
+                            # Skip entire subtree efficiently
+                            while true
+                                _current = XML.next(_current)
+                                if isnothing(_current) || XML.depth(_current.raw) <= _target_depth
+                                    break
+                                end
+                            end
+                        else
+                            # Should not happen, but advance anyway
+                            _current = XML.next(_current)
+                        end
                     end
                 end
             else
@@ -66,29 +75,37 @@ macro find_immediate_child(node_expr, child_var, condition)
                     _current = XML.next(_node),
                     _result = nothing
                     
-                    # Cache raw pointer
-                    _raw = _current === nothing ? nothing : _current.raw
-                    
-                    while _raw !== nothing && isnothing(_result)
+                    while !isnothing(_current) && isnothing(_result)
+                        _raw = _current.raw
                         _cur_depth = XML.depth(_raw)
                         
+                        # Single stop condition
                         if _cur_depth <= _initial_depth
                             break
-                        elseif _cur_depth == _target_depth
-                            # Create LazyNode for condition check
-                            let _candidate = XML.LazyNode(_raw)
-                                let $(esc(child_var)) = _candidate
-                                    if $(esc(condition))
-                                        _result = _candidate
-                                    end
-                                end
-                            end
                         end
                         
-                        if isnothing(_result)
-                            # Advance using raw pointer
-                            # XML.next returns XML.Raw or nothing directly
-                            _raw = XML.next(_raw)
+                        # Check immediate children only
+                        if _cur_depth == _target_depth
+                            let $(esc(child_var)) = _current
+                                if $(esc(condition))
+                                    _result = _current
+                                end
+                            end
+                            # If not found, continue
+                            if isnothing(_result)
+                                _current = XML.next(_current)
+                            end
+                        elseif _cur_depth > _target_depth
+                            # Skip entire subtree efficiently
+                            while true
+                                _current = XML.next(_current)
+                                if isnothing(_current) || XML.depth(_current.raw) <= _target_depth
+                                    break
+                                end
+                            end
+                        else
+                            # Should not happen, but advance anyway
+                            _current = XML.next(_current)
                         end
                     end
                     _result
@@ -124,28 +141,36 @@ macro count_immediate_children(node_expr, child_var, condition)
                     _current = XML.next(_node),
                     _count = 0
                     
-                    # Cache raw pointer
-                    _raw = _current === nothing ? nothing : _current.raw
-                    
-                    while _raw !== nothing
+                    while !isnothing(_current)
+                        _raw = _current.raw
                         _cur_depth = XML.depth(_raw)
                         
+                        # Single stop condition
                         if _cur_depth <= _initial_depth
                             break
-                        elseif _cur_depth == _target_depth
-                            # Create LazyNode only for condition check
-                            let _candidate = XML.LazyNode(_raw)
-                                let $(esc(child_var)) = _candidate
-                                    if $(esc(condition))
-                                        _count += 1
-                                    end
-                                end
-                            end
                         end
                         
-                        # Advance using raw pointer
-                        # XML.next returns XML.Raw or nothing directly
-                        _raw = XML.next(_raw)
+                        # Count immediate children only
+                        if _cur_depth == _target_depth
+                            let $(esc(child_var)) = _current
+                                if $(esc(condition))
+                                    _count += 1
+                                end
+                            end
+                            # Continue to next
+                            _current = XML.next(_current)
+                        elseif _cur_depth > _target_depth
+                            # Skip entire subtree efficiently
+                            while true
+                                _current = XML.next(_current)
+                                if isnothing(_current) || XML.depth(_current.raw) <= _target_depth
+                                    break
+                                end
+                            end
+                        else
+                            # Should not happen, but advance anyway
+                            _current = XML.next(_current)
+                        end
                     end
                     _count
                 end

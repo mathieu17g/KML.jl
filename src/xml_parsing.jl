@@ -87,7 +87,7 @@ function object(node::XML.AbstractXMLNode)
             # For Snippet, still process any element children
             if T === Types.Snippet
                 @for_each_immediate_child node child_element_node begin
-                    if nodetype(child_element_node) === XML.Element
+                    if XML.nodetype(child_element_node) === XML.Element
                         add_element!(o, child_element_node)
                     end
                 end
@@ -95,7 +95,7 @@ function object(node::XML.AbstractXMLNode)
         else
             # Generic parsing of child ELEMENTS for all other KMLElement types
             @for_each_immediate_child node child_element_node begin
-                if nodetype(child_element_node) === XML.Element
+                if XML.nodetype(child_element_node) === XML.Element
                     add_element!(o, child_element_node)
                 end
             end
