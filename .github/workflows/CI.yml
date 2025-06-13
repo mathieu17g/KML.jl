@@ -1,48 +1,117 @@
 name: CI
+
 on:
   push:
-    branches: [main]
-    tags: ["*"]
+    branches:
+      - main
+      - master
   pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  actions: write     # Required for julia-actions/cache
+  contents: read     # Basic repository read access
+  pull-requests: read
+  statuses: write
+
 jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
     runs-on: ${{ matrix.os }}
+    
     strategy:
       fail-fast: false
       matrix:
         version:
-          - '1' # automatically expands to the latest stable 1.x release of Julia
-          - 'nightly'
+          - 'lts'        # Latest LTS release
+          - '1'          # Latest stable 1.x release  
+          - 'pre'        # Pre-release (nightly)
         os:
           - ubuntu-latest
           - macOS-latest
           - windows-latest
         arch:
           - x64
-          - x86
         exclude:
+          # Exclude some combinations to save CI time
           - os: macOS-latest
-            arch: x86
+            version: 'pre'
+          - os: windows-latest
+            version: 'pre'
+    
     steps:
-      - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@v1
+      - uses: actions/checkout@v4
+        
+      - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
-      - uses: actions/cache@v1
-        env:
-          cache-name: cache-artifacts
-        with:
-          path: ~/.julia/artifacts
-          key: ${{ runner.os }}-test-${{ env.cache-name }}-${{ hashFiles('**/Project.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-test-${{ env.cache-name }}-
-            ${{ runner.os }}-test-
-            ${{ runner.os }}-
+          
+      - uses: julia-actions/cache@v2
+        
+      # Build package dependencies
       - uses: julia-actions/julia-buildpkg@v1
+        
+      # Run tests with annotations for better error reporting
       - uses: julia-actions/julia-runtest@v1
-      - uses: julia-actions/julia-processcoverage@v1
-      - uses: codecov/codecov-action@v1
         with:
-          file: lcov.info
+          annotate: true
+          
+      # Process coverage data
+      - uses: julia-actions/julia-processcoverage@v1
+        
+      # Upload coverage to Codecov
+      - uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+          
+      # Upload coverage to Coveralls
+      - uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: lcov.info
+          flag-name: run-${{ matrix.os }}-${{ matrix.version }}
+          parallel: true
+
+  # Finalize Coveralls parallel builds
+  finish:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Coveralls Finished
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          parallel-finished: true
+
+  # Documentation job
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - name: Configure doc environment
+        shell: julia --color=yes --project=docs {0}
+        run: |
+          using Pkg
+          Pkg.develop(PackageSpec(path=pwd()))
+          Pkg.instantiate()
+      - name: Build and deploy documentation
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
+        run: |
+          julia --color=yes --project=docs docs/make.jl
