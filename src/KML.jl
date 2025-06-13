@@ -726,10 +726,10 @@ for T in vcat(all_concrete_subtypes(KMLElement), all_abstract_subtypes(Object))
     end
 end
 
-# Add this type-level implementation for GeoInterface v1.x
+# Add this type-level implementation for GeoInterface v1.x 
 GeoInterface.isgeometry(::Type{<:Geometry}) = true
 
-# Add the missing ncoord implementations for GeoInterface v1.x
+# Add the missing ncoord implementations for GeoInterface v1.x 
 GeoInterface.ncoord(::GeoInterface.LineStringTrait, ls::LineString) = 2
 GeoInterface.ncoord(::GeoInterface.LinearRingTrait, lr::LinearRing) = 2
 
