@@ -106,7 +106,15 @@ function __init__()
     Base.Experimental.register_error_hint(IO._read_kmz_file_from_path_error_hinter, ErrorException)
 
     # Only check for conflicts when not precompiling
-    if !Base.generating_output()
+    # Use generating_output if available (Julia 1.11+), otherwise check ccall
+    is_precompiling = if isdefined(Base, :generating_output)
+        Base.generating_output()
+    else
+        # Julia 1.10 and earlier: check if we're in precompilation
+        ccall(:jl_generating_output, Cint, ()) != 0
+    end
+    
+    if !is_precompiling
         check_geometry_conflicts()
     end
 end
