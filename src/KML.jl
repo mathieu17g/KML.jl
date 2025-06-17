@@ -11,7 +11,7 @@ using InteractiveUtils: subtypes
 include("macros.jl")
 
 # Include all modules in dependency order
-include("enums.jl")
+include("Enums.jl")
 include("types.jl")
 include("coordinates.jl")
 include("time_parsing.jl")
