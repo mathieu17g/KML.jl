@@ -13,7 +13,7 @@ include("macros.jl")
 # Include all modules in dependency order
 include("Enums.jl")
 include("types.jl")
-include("coordinates.jl")
+include("Coordinates.jl")
 include("time_parsing.jl")
 include("html_entities.jl")
 include("field_conversion.jl")
